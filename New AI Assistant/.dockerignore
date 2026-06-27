@@ -1,0 +1,30 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local environment variables (loaded dynamically instead)
+.env
+
+# Database logs and local data files (persisted via Docker volumes)
+*.db
+*.db-journal
+
+# Backup and diff files
+initial_app.py
+origin_app.py
+diff_app.txt
+local_diffs.txt
+
+# Images and screenshots
+*.png
+*.webp
+
+# Git directories
+.git/
+.gitignore
+
+# IDE configurations
+.vscode/
+.idea/
