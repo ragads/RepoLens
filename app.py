@@ -2,7 +2,6 @@
 import streamlit as st
 import importlib
 from theme import inject_theme
-from services.supabase_service import get_client
 
 st.set_page_config(
     page_title='AI Engineer Assistant',
@@ -12,7 +11,6 @@ st.set_page_config(
 )
 
 inject_theme()
-client = get_client()   # None = SQLite fallback
 
 PAGES = {
     '📂  Dashboard':     'pages.dashboard',
@@ -34,8 +32,8 @@ with st.sidebar:
 
     # Connection status at bottom of sidebar
     st.markdown('<div style="flex:1"></div>', unsafe_allow_html=True)
-    status_color = '#00f0ff' if client else '#f59e0b'
-    status_text  = 'Supabase Connected' if client else 'Local SQLite Fallback'
+    status_color = '#00f0ff'
+    status_text  = 'Local SQLite Database'
     st.markdown(f'''
     <div style="margin-top:auto; padding:16px 12px 8px;">
       <div style="font-size:0.65rem; color:#7ea8c9;
@@ -52,4 +50,4 @@ with st.sidebar:
 
 # Route to selected page
 mod = importlib.import_module(PAGES[page])
-mod.render(client)
+mod.render()

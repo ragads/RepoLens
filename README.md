@@ -1,6 +1,6 @@
 # AI Software Engineer Assistant 🧠🤖
 
-A high-fidelity, multi-agent workspace designed for codebase exploration, repository indexing, and interactive developer question-answering. The project combines a beautiful space-blue glassmorphic Streamlit dashboard with a state-of-the-art Multi-Agent Swarm Orchestrator and vector similarity search.
+A high-fidelity, unified developer workspace designed for codebase exploration, repository indexing, and interactive codebase Q&A. The project combines a space-blue glassmorphic Streamlit dashboard with a state-of-the-art Multi-Agent Swarm Orchestrator and local vector similarity search.
 
 ---
 
@@ -8,24 +8,27 @@ A high-fidelity, multi-agent workspace designed for codebase exploration, reposi
 
 1. **Multi-Agent Swarm Orchestrator**:
    * **Planner Agent**: Analyzes user questions, evaluates the catalog of indexed files, and generates a structured keyword search plan.
-   * **Code Search Agent**: Executes semantic vector search and keyword scans across source code index chunks.
+   * **Code Search Agent**: Executes semantic vector similarity scans across source code index chunks.
    * **Doc Search Agent**: Targets API definitions, design documentation, and markdown files to retrieve configuration contexts.
-   * **Answer Generator Agent**: Synthesizes retrieved codebase contents and planning parameters into a final developer-ready solution using Gemini models.
+   * **Answer Generator Agent**: Synthesizes retrieved codebase contents and planning parameters into a final developer-ready answer using Gemini models.
 
 2. **Ingestion & Indexing Engine**:
    * **Single File Ingest**: Supports uploading individual source files, API docs, or design text.
-   * **GitHub Ingestion**: Downloads public GitHub repositories via ZIP branch downloads, filters out boilerplate files (e.g., `node_modules`, `venv`, binary files), auto-detects programming languages, and indexes entire repositories at once.
+   * **GitHub Ingest (With Accessibility Validation)**: Clones and indexes public GitHub repositories. Automatically runs a privacy check; if a repository is private, it alerts the user with: **"This repository is private, so I can't access it."**
    * **Line-Based Sliding Chunking**: Splits large documents into manageable segments of 40 lines with a 5-line sliding overlap to preserve file context.
 
-3. **Hybrid Vector Database Routing**:
-   * **Supabase Integration**: Connects to Supabase with pgvector support for remote storage and server-side vector operations.
-   * **SQLite Local Fallback**: Gracefully falls back to a local SQLite database (`assistant.db`) if Supabase is unconfigured, storing embeddings as serialized float arrays and computing in-memory cosine similarity searches.
-   * **Google GenAI Embeddings**: Uses the `google-genai` SDK and the `text-embedding-004` model for high-accuracy embedding vectors.
+3. **Project Overview & README Detection**:
+   * If a `README` file exists in the repository, its contents are rendered directly.
+   * If no `README` exists, it uses the Gemini model to analyze the codebase structure and automatically generate an easy-to-understand project explanation covering its purpose, folder structure, and design patterns.
 
-4. **Premium Space-Blue UI Dashboard**:
-   * Outlined with glowing space-blue and hot-magenta neon boundaries (`#00f0ff` / `#d946ef`).
-   * Custom Plotly gauge dials, dual-spline traffic area graphs, and percentage donut arrays.
-   * Dedicated pages: **Dashboard** (Codebase Ingestion & File Index Manager).
+4. **Interactive Code Q&A**:
+   * A full chat-based workspace allows you to ask questions about the indexed codebase.
+   * Shows step-by-step agent execution progress and retrieves specific code chunks to formulate accurate answers.
+
+5. **Local Vector Database**:
+   * Stores document chunks, query logs, and embeddings locally in an SQLite database (`assistant.db`).
+   * Serializes embeddings as JSON float arrays and computes in-memory cosine similarity searches.
+   * Uses the `google-genai` SDK and the `text-embedding-004` model for high-accuracy embedding vectors.
 
 ---
 
@@ -34,20 +37,21 @@ A high-fidelity, multi-agent workspace designed for codebase exploration, reposi
 ```mermaid
 graph TD
     A[app.py - Streamlit UI] -->|Query| B[agent_orchestrator.py - Swarm Coordinator]
-    A -->|Ingest Files/Repo| C[supabase_db.py - DatabaseManager]
+    A -->|Ingest Files/Repo| C[services/database_service.py - DatabaseManager]
     B -->|Cosine Similarity / Retrieval| C
-    C -->|Fallback / Remote| D[(SQLite / Supabase pgvector)]
+    C -->|Local Storage| D[(SQLite assistant.db)]
     B -->|LLM & Embeddings| E(Google GenAI Client API)
 ```
 
 ### Key Files
-* **[app.py](app.py)**: Handles the Streamlit page rendering, theme definitions, visual grid styling, custom component HTML/CSS, Plotly data figures, and page routing.
-* **[agent_orchestrator.py](agent_orchestrator.py)**: Manages agent prompts, sequence execution log triggers, and coordinates Planner, Code Search, Doc Search, and Generator workflows.
+* **[app.py](app.py)**: Handles page routing and main Streamlit configuration.
+* **[pages/dashboard.py](pages/dashboard.py)**: Contains the unified single-page dashboard UI (Ingestion, README, Q&A, and File Manager).
+* **[agent_orchestrator.py](agent_orchestrator.py)**: Coordinates Planner, Code Search, Doc Search, and Generator workflows.
 * **[services/](services/)**: Directory containing core backend services:
-  * **[supabase_service.py](services/supabase_service.py)**: Coordinates remote Supabase operations and acts as the entry point for the database manager (falling back to SQLite when Supabase is unconfigured).
-  * **[sqlite_service.py](services/sqlite_service.py)**: Manages the local SQLite database (`assistant.db`), defining table structures and running local text indexing.
+  * **[database_service.py](services/database_service.py)**: Coordinates database queries and delegates schema tasks to SQLite.
+  * **[sqlite_service.py](services/sqlite_service.py)**: Manages local SQLite tables, schemas, and cosine similarity.
   * **[embedding_service.py](services/embedding_service.py)**: Handles connection to Gemini's embedding model to generate high-dimensional vectors.
-  * **[similarity_service.py](services/similarity_service.py)**: Contains math utilities for calculating cosine similarity metrics during search queries.
+  * **[similarity_service.py](services/similarity_service.py)**: Contains math utilities for calculating cosine similarity metrics.
 * **[requirements.txt](requirements.txt)**: Defines external dependencies.
 
 ---
@@ -64,8 +68,6 @@ Define the configuration parameters:
 | Variable | Description | Required | Default |
 |---|---|---|---|
 | `GEMINI_API_KEY` | Google Gemini API Key | **Yes** | None |
-| `SUPABASE_URL` | Supabase Postgres URL | Yes | SQLite fallback |
-| `SUPABASE_KEY` | Supabase API Service Key | Yes | SQLite fallback |
 
 ---
 
@@ -97,8 +99,7 @@ Open [http://localhost:8505](http://localhost:8505) in your web browser.
 
 ## 🗄️ Database Schema Details
 
-### SQLite Fallback (`assistant.db`)
-When running locally without Supabase, the following tables are automatically initialized inside `assistant.db`:
+The following tables are automatically initialized inside `assistant.db`:
 
 #### `assistant_files`
 Stores the metadata and raw content of ingested files.
@@ -126,3 +127,4 @@ Logs swarm orchestrator queries and answers.
 * `retrieved_files`: `TEXT` (JSON array of filenames)
 * `answer`: `TEXT`
 * `created_at`: `TIMESTAMP`
+

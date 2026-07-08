@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Tuple
 import google.genai as genai
 from google.genai import types
 from dotenv import load_dotenv
-from services.supabase_service import DatabaseManager
+from services.database_service import DatabaseManager
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")

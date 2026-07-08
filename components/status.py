@@ -1,16 +1,11 @@
 # components/status.py
 import streamlit as st
 
-def connection_badge(client):
-    """Shows active connection status (Supabase or SQLite fallback)."""
-    if client:
-        st.markdown(
-            '<span style="color:#00f0ff;font-size:0.8rem;font-weight:600;">'
-            '● Supabase Connected</span>', unsafe_allow_html=True)
-    else:
-        st.markdown(
-            '<span style="color:#d946ef;font-size:0.8rem;font-weight:600;">'
-            '● SQLite Fallback</span>', unsafe_allow_html=True)
+def connection_badge():
+    """Shows active connection status (SQLite database)."""
+    st.markdown(
+        '<span style="color:#00f0ff;font-size:0.8rem;font-weight:600;">'
+        '● SQLite Connected</span>', unsafe_allow_html=True)
 
 def skeleton(rows=3):
     """Show animated placeholder lines while data loads."""
