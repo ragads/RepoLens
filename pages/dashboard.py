@@ -173,27 +173,7 @@ def ensure_readme_or_explanation():
         st.session_state['last_repo_explanation'] = explanation
         st.session_state['last_repo_name'] = "Currently Indexed Workspace"
 
-def process_single_file(uploaded, file_type):
-    try:
-        content = uploaded.read().decode("utf-8", errors="ignore")
-        filename = uploaded.name
-        ext = filename.split(".")[-1].lower() if "." in filename else ""
-        lang = LANGUAGE_MAPPING.get(ext, "text")
-        save_file(filename, file_type, content, lang, len(content))
-        st.success(f"✓ Indexed {filename}")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Failed to process file: {e}")
 
-def process_pasted_text(raw_text, filename, paste_type):
-    try:
-        ext = filename.split(".")[-1].lower() if "." in filename else ""
-        lang = LANGUAGE_MAPPING.get(ext, "text")
-        save_file(filename, paste_type, raw_text, lang, len(raw_text))
-        st.success(f"✓ Indexed {filename}")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Failed to process pasted text: {e}")
 
 def download_and_filter_repo(repo_url: str, branch: str) -> list:
     repo_path = parse_github_url(repo_url)
@@ -309,49 +289,26 @@ def clone_and_index(repo_url: str, branch: str):
     except Exception as ex:
         st.error(f"Failed to clone and index repository: {ex}")
 
-def render_ingestion_tabs():
-    tab_upload, tab_github, tab_paste = st.tabs([
-        '📄  Upload File',
-        '🐙  GitHub Repo',
-        '✍️  Paste Text',
-    ])
- 
-    with tab_upload:
-        uploaded = st.file_uploader(
-            'Drop a source file, API doc, or design doc',
-            type=['py','js','ts','tsx','md','txt','json','yaml','html','css','java','go','rs']
-        )
-        file_type = st.selectbox('File Type',
-            ['source_code', 'api_doc', 'design_doc'])
-        if st.button('⬆  Ingest File') and uploaded:
-            process_single_file(uploaded, file_type)
- 
-    with tab_github:
-        repo_url = st.text_input('GitHub URL',
-            placeholder='https://github.com/owner/repo')
-        branch = st.text_input('Branch', value='main')
-        col_clone, col_info = st.columns([2,1])
-        with col_clone:
-            if st.button('⬇  Analyze Repository', use_container_width=True):
-                if repo_url:
-                    clone_and_index(repo_url, branch)
-                else:
-                    st.error("Please enter a repository URL.")
-                    
-        with st.expander("ℹ️  Limitations & Technical Notes"):
-            st.markdown("""
-            * **Private Repositories:** Private repositories cannot be accessed because the application operates without GitHub API credentials (Personal Access Tokens). Attempts to clone them will be automatically detected and blocked with a warning message.
-            * **API Rate Limits:** Unauthenticated requests to GitHub's REST API and ZIP download endpoints share public rate limits. Excessive requests may trigger temporary blocks.
-            * **Repository Size:** Extremely large codebases may hit container execution limits (512MB RAM on free-tier hosting) or timeout during vector embedding generation.
-            * **Binary/Boilerplate Filtering:** Media files, zip files, and build/dependency folders (like `node_modules/`, `venv/`, `.git/`) are automatically excluded from indexing to optimize performance.
-            """)
- 
-    with tab_paste:
-        raw_text = st.text_area('Paste code or text', height=240)
-        filename = st.text_input('Filename', placeholder='snippet.py')
-        paste_type = st.selectbox('Type', ['source_code','api_doc','design_doc'])
-        if st.button('⬆  Ingest Text') and raw_text and filename:
-            process_pasted_text(raw_text, filename, paste_type)
+def render_ingestion_section():
+    st.markdown("### 🐙  GitHub Repository Ingestion")
+    repo_url = st.text_input('GitHub URL',
+        placeholder='https://github.com/owner/repo')
+    branch = st.text_input('Branch', value='main')
+    col_clone, col_info = st.columns([2,1])
+    with col_clone:
+        if st.button('⬇  Analyze Repository', use_container_width=True):
+            if repo_url:
+                clone_and_index(repo_url, branch)
+            else:
+                st.error("Please enter a repository URL.")
+                
+    with st.expander("ℹ️  Limitations & Technical Notes"):
+        st.markdown("""
+        * **Private Repositories:** Private repositories cannot be accessed because the application operates without GitHub API credentials (Personal Access Tokens). Attempts to clone them will be automatically detected and blocked with a warning message.
+        * **API Rate Limits:** Unauthenticated requests to GitHub's REST API and ZIP download endpoints share public rate limits. Excessive requests may trigger temporary blocks.
+        * **Repository Size:** Extremely large codebases may hit container execution limits (512MB RAM on free-tier hosting) or timeout during vector embedding generation.
+        * **Binary/Boilerplate Filtering:** Media files, zip files, and build/dependency folders (like `node_modules/`, `venv/`, `.git/`) are automatically excluded from indexing to optimize performance.
+        """)
 
 def render_files_table():
     st.markdown('#### 🗄️  Indexed Files')
@@ -413,20 +370,19 @@ def render_files_table():
 
 def render():
     inject_theme()
-    st.markdown("### 📂  Dashboard")
+    st.markdown("### Dashboard")
     
     # Auto-load state if DB already has files
     ensure_readme_or_explanation()
     
-    tab_ingest, tab_readme, tab_qa, tab_files = st.tabs([
-        '📥  Ingestion & Repository',
+    tab_ingest, tab_readme, tab_files = st.tabs([
+        '📥  Repository Ingestion',
         '📖  README & Explanation',
-        '💬  Project Q&A',
         '🗄️  Indexed Files'
     ])
     
     with tab_ingest:
-        render_ingestion_tabs()
+        render_ingestion_section()
         
     with tab_readme:
         st.markdown("### 📖  Project Overview")
@@ -447,51 +403,5 @@ def render():
         else:
             st.info("No repository has been analyzed yet. Ingest a repository to view its overview.")
             
-    with tab_qa:
-        st.markdown("### 💬  Project Q&A")
-        st.write("Ask questions about the indexed codebase. The agent swarm will retrieve code context to answer.")
-        
-        if "chat_history" not in st.session_state:
-            st.session_state["chat_history"] = []
-            
-        # Display chat history
-        for chat in st.session_state["chat_history"]:
-            with st.chat_message(chat["role"]):
-                st.markdown(chat["content"])
-                
-        user_question = st.chat_input("Ask a question about the repository...")
-        if user_question:
-            with st.chat_message("user"):
-                st.markdown(user_question)
-            st.session_state["chat_history"].append({"role": "user", "content": user_question})
-            
-            with st.chat_message("assistant"):
-                status_placeholder = st.empty()
-                with st.spinner("Agent Swarm is analyzing code..."):
-                    from agent_orchestrator import AgentOrchestrator
-                    from services.database_service import DatabaseManager
-                    
-                    db_manager = DatabaseManager()
-                    orchestrator = AgentOrchestrator(db_manager)
-                    
-                    steps_log = []
-                    def show_step(step_name, data):
-                        steps_log.append(f"🤖 **{step_name}**: {data.get('message', '')}")
-                        status_placeholder.markdown("\n".join(steps_log))
-                        
-                    try:
-                        result = orchestrator.run_workflow(user_question, on_step_callback=show_step)
-                        status_placeholder.empty()
-                        
-                        with st.expander("🔍 Show Agent Execution Steps"):
-                            for log in result.get("logs", []):
-                                st.markdown(f"**{log['step']}** ({log['status'].upper()}): {log['message']}")
-                                
-                        st.markdown(result["answer"])
-                        st.session_state["chat_history"].append({"role": "assistant", "content": result["answer"]})
-                    except Exception as e:
-                        status_placeholder.empty()
-                        st.error(f"Failed to get answer: {e}")
-                        
     with tab_files:
         render_files_table()

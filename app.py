@@ -12,10 +12,6 @@ st.set_page_config(
 
 inject_theme()
 
-PAGES = {
-    '📂  Dashboard':     'pages.dashboard',
-}
-
 with st.sidebar:
     # Logo — NO subtitle
     st.markdown('''
@@ -28,8 +24,20 @@ with st.sidebar:
     st.markdown('<hr style="border-color:rgba(0,240,255,0.15);margin:0 0 12px">',
         unsafe_allow_html=True)
 
-    page = st.radio('', list(PAGES.keys()), label_visibility='collapsed', key='nav_radio')
+    # Static Navigation Label (No blue dot, no folder icon)
+    st.markdown('''
+    <div style="background:rgba(0,240,255,0.06); 
+        border-left:3px solid #00f0ff; 
+        padding:10px 20px; 
+        margin:0 8px;
+        border-radius:4px;
+        color:#e0f7fc;
+        font-weight:600;
+        font-size:0.95rem;
+        letter-spacing:0.05em;
+        font-family:'Space Grotesk', sans-serif;">Dashboard</div>
+    ''', unsafe_allow_html=True)
 
-# Route to selected page
-mod = importlib.import_module(PAGES[page])
+# Route directly to dashboard page
+mod = importlib.import_module('pages.dashboard')
 mod.render()
