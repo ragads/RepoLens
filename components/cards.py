@@ -1,49 +1,70 @@
 # components/cards.py
+"""Card primitives. All colors come from CSS custom properties defined in theme.py."""
 import streamlit as st
 
-def metric_card(icon, label, value, color='#00f0ff', delta=None):
-    """Renders a modern, glassmorphic metric card with glowing top border."""
-    delta_html = ''
+
+def metric_card(icon, label, value, tone="accent", delta=None):
+    """A KPI tile. `tone` is a token name: accent|critical|high|medium|low|info|success."""
+    delta_html = ""
     if delta:
-        delta_html = f'<div style="color:{color};font-size:0.78rem;margin-top:4px;">{delta}</div>'
-    st.markdown(f'''
-    <div style="
-        background:rgba(10, 20, 45, 0.75);
-        border:1px solid {color}44;
-        border-top:2px solid {color};
-        border-radius:12px;
-        padding:20px 24px;
-        backdrop-filter:blur(12px);
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);">
-      <div style="font-size:1.4rem">{icon}</div>
-      <div style="color:#7ea8c9;font-size:0.72rem;
-          letter-spacing:0.08em;text-transform:uppercase;
-          margin-top:8px">{label}</div>
-      <div style="color:#e8f4ff;font-size:1.75rem;font-weight:700;
-          margin-top:4px">{value}</div>
+        delta_html = (
+            f'<div style="color:var(--{tone});font-size:0.8125rem;'
+            f'margin-top:2px;">{delta}</div>'
+        )
+    st.markdown(
+        f"""
+    <div class="dp-card dp-kpi">
+      <div class="dp-kpi-icon"
+           style="background:var(--{tone}-soft);color:var(--{tone});">{icon}</div>
+      <div class="dp-overline">{label}</div>
+      <div class="dp-kpi-value">{value}</div>
       {delta_html}
-    </div>''', unsafe_allow_html=True)
+    </div>""",
+        unsafe_allow_html=True,
+    )
 
-def file_type_chip(label, color='#00f0ff'):
-    """Returns HTML for a styled file type pill badge."""
-    return (f'<span style="background:{color}18;color:{color};'
-            f'border:1px solid {color}44;padding:2px 10px;'
-            f'border-radius:20px;font-size:0.72rem;font-weight:500;">{label}</span>')
 
-def glass_panel(content_fn, title=None, accent='#00f0ff'):
-    """Wrap content in a glassmorphic panel container."""
-    # Write top of container
-    header = ''
+def file_type_chip(label):
+    """Returns HTML for a neutral pill badge (inline use)."""
+    return f'<span class="dp-chip">{label}</span>'
+
+
+def severity_badge(level):
+    """Returns HTML for a colored severity pill.
+
+    level ∈ critical|high|medium|low|info|success
+    """
+    level = (level or "info").lower()
+    return (
+        f'<span class="dp-badge" style="background:var(--{level}-soft);'
+        f'color:var(--{level});">{level.upper()}</span>'
+    )
+
+
+def section_header(title, subtitle=None):
+    """Page title plus an optional muted subtitle."""
+    st.markdown(f"# {title}")
+    if subtitle:
+        st.markdown(f'<div class="dp-subtitle">{subtitle}</div>', unsafe_allow_html=True)
+    st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+
+
+def empty_state(icon, title, desc):
+    """Centered empty-state card. Render a CTA button after this call if needed."""
+    st.markdown(
+        f"""
+    <div class="dp-empty">
+      <div style="font-size:2.5rem;opacity:.45;line-height:1">{icon}</div>
+      <div style="color:var(--text-primary);font-size:0.9375rem;
+           font-weight:600;margin-top:12px">{title}</div>
+      <div style="color:var(--text-muted);font-size:0.8125rem;margin-top:4px">{desc}</div>
+    </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def card(content_fn, title=None):
+    """Render an overline title then the caller's content."""
     if title:
-        header = f'''<div style="color:{accent};font-size:0.7rem;
-            letter-spacing:0.1em;text-transform:uppercase;
-            font-weight:700;margin-bottom:14px;">{title}</div>'''
-            
-    # For Streamlit rendering layout structure:
-    # A container inside a styled glass border can be styled using streamlit containers,
-    # or by injecting a wrapper. We render the header HTML first.
-    if header:
-        st.markdown(header, unsafe_allow_html=True)
-    
-    # Run the content function
+        st.markdown(f'<div class="dp-overline">{title}</div>', unsafe_allow_html=True)
     content_fn()

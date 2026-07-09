@@ -5,5 +5,7 @@ __pycache__/
 .DS_Store
 scratch/
 *.png
-cloudflared.exe
-project.zip
+!assets/guide/*.png
+venv/
+cloned_runs/
+streamlit.log

@@ -54,7 +54,22 @@ def init_sqlite():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
+        # Security audit reports
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_name TEXT,
+                summary TEXT,        -- JSON {counts, score, grade}
+                findings TEXT,       -- JSON array
+                score INTEGER,
+                grade TEXT,
+                files_scanned INTEGER,
+                files_skipped TEXT,  -- JSON array
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -142,10 +157,72 @@ def wipe_all():
         cursor.execute("DELETE FROM assistant_file_chunks")
         cursor.execute("DELETE FROM assistant_files")
         cursor.execute("DELETE FROM assistant_queries")
+        cursor.execute("DELETE FROM assistant_audits")
         conn.commit()
         conn.close()
     except Exception as e:
         logger.error(f"SQLite wipe all failed: {e}")
+
+
+# ── Security audits ──────────────────────────────────────────────────
+def save_audit(repo_name: str, summary: str, findings: str, score: int,
+               grade: str, files_scanned: int, files_skipped: str) -> Optional[int]:
+    try:
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO assistant_audits
+                (repo_name, summary, findings, score, grade, files_scanned, files_skipped)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (repo_name, summary, findings, score, grade, files_scanned, files_skipped))
+        audit_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return audit_id
+    except Exception as e:
+        logger.error(f"SQLite save audit failed: {e}")
+        return None
+
+
+def _row_to_audit(row) -> Dict[str, Any]:
+    rd = dict(row)
+    for field in ("summary", "findings", "files_skipped"):
+        if rd.get(field):
+            try:
+                rd[field] = json.loads(rd[field])
+            except Exception:
+                pass
+    return rd
+
+
+def get_latest_audit() -> Optional[Dict[str, Any]]:
+    try:
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM assistant_audits ORDER BY created_at DESC LIMIT 1")
+        row = cursor.fetchone()
+        conn.close()
+        return _row_to_audit(row) if row else None
+    except Exception as e:
+        logger.error(f"SQLite get latest audit failed: {e}")
+        return None
+
+
+def get_audit_history(limit: int = 10) -> List[Dict[str, Any]]:
+    try:
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM assistant_audits ORDER BY created_at DESC LIMIT ?", (limit,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [_row_to_audit(r) for r in rows]
+    except Exception as e:
+        logger.error(f"SQLite get audit history failed: {e}")
+        return []
 
 def get_query_history(limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
     try:

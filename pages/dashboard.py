@@ -1,253 +1,124 @@
 # pages/dashboard.py
-import streamlit as st
-import urllib.request
-import urllib.error
-import zipfile
+"""UI sections for DevPulse Architect.
+
+Backend logic (GitHub ingestion, LLM explanation) lives here alongside the render
+functions; anything reusable outside Streamlit belongs in services/.
+
+Sections exported to the router in app.py:
+    render_overview, render_ingestion_section, render_project_overview,
+    render_static_preview, render_files_table, render_settings
+"""
+import base64
 import io
-import json
 import logging
 import os
-import subprocess
-import queue
-import threading
-import time
-import sys
-import shlex
-import pandas as pd
+import posixpath
 import re
-import google.genai as genai
-from google.genai import types
-from theme import inject_theme
+import urllib.error
+import urllib.request
+import zipfile
+
+import streamlit as st
+
+from components.cards import empty_state, file_type_chip, metric_card, section_header
+from services import llm_service
 from services.database_service import (
-    get_all_files,
-    save_file,
+    LANGUAGE_MAPPING,
     delete_file,
+    get_all_files,
+    get_chunk_count,
     get_file_content,
+    get_file_count,
+    get_language_breakdown,
+    get_storage_label,
     insert_file_with_chunks,
     wipe_all,
-    LANGUAGE_MAPPING
 )
 
 logger = logging.getLogger("pages_dashboard")
 
-def parse_github_url(repo_url: str) -> str:
-    url = repo_url.strip()
+
+# ══════════════════════════════════════════════════════════════════════
+# GitHub ingestion
+# ══════════════════════════════════════════════════════════════════════
+def parse_github_url(repo_url: str):
+    url = (repo_url or "").strip()
     if not url:
         return None
     if url.endswith(".git"):
         url = url[:-4]
-    
-    # Extract path portion
+
     if "git@github.com:" in url:
         path = url.split("git@github.com:")[-1]
     elif "github.com/" in url:
         path = url.split("github.com/")[-1]
     else:
         path = url
-        
-    path = path.strip("/")
-    parts = path.split("/")
+
+    parts = path.strip("/").split("/")
     if len(parts) >= 2:
         return f"{parts[0]}/{parts[1]}"
     return None
 
-def read_output_stream(process, q):
-    try:
-        while True:
-            char = process.stdout.read(1)
-            if not char:
-                break
-            q.put(char)
-    except Exception:
-        pass
-    finally:
-        try:
-            process.stdout.close()
-        except Exception:
-            pass
-
-def extract_indexed_files_to_disk(repo_url: str, files: list) -> str:
-    repo_path = parse_github_url(repo_url)
-    if not repo_path:
-        return None
-    safe_dir_name = repo_path.replace("/", "_")
-    target_dir = os.path.join("cloned_runs", safe_dir_name)
-    os.makedirs(target_dir, exist_ok=True)
-    
-    for f in files:
-        path = f["path"]
-        content = f["content"]
-        out_path = os.path.join(target_dir, path)
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        
-        # Write content (either as bytes or text string)
-        if isinstance(content, str):
-            with open(out_path, "w", encoding="utf-8", errors="ignore") as file_out:
-                file_out.write(content)
-        else:
-            with open(out_path, "wb") as file_out:
-                file_out.write(content)
-                
-    return target_dir
 
 def check_repo_private(repo_url: str) -> bool:
     repo_path = parse_github_url(repo_url)
     if not repo_path:
         return False
-        
-    api_url = f"https://api.github.com/repos/{repo_path}"
+
     req = urllib.request.Request(
-        api_url,
-        headers={"User-Agent": "Mozilla/5.0"}
+        f"https://api.github.com/repos/{repo_path}",
+        headers={"User-Agent": "Mozilla/5.0"},
     )
     try:
+        import json as _json
+
         with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read().decode())
-            if data.get("private", False):
-                return True
-            return False
+            return bool(_json.loads(response.read().decode()).get("private", False))
     except urllib.error.HTTPError as e:
         if e.code == 403:
-            # Check for API rate limiting
-            rate_remaining = e.headers.get("X-RateLimit-Remaining")
-            if rate_remaining == "0":
-                return False  # Rate limited, assume public to allow ZIP download attempt
+            # Rate limited -> assume public and let the ZIP download decide.
+            if e.headers.get("X-RateLimit-Remaining") == "0":
+                return False
             try:
-                body = e.read().decode("utf-8", errors="ignore")
-                if "rate limit" in body.lower():
+                if "rate limit" in e.read().decode("utf-8", errors="ignore").lower():
                     return False
             except Exception:
                 pass
             return True
-        elif e.code in [404, 401]:
-            # Private or non-existent
+        if e.code in (401, 404):
             return True
         return False
     except Exception:
         return False
 
-def call_gemini(prompt: str, system_instruction: str = "") -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured in your .env file.")
-    client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction
-        )
-    )
-    return response.text
-
-def generate_project_explanation(files: list) -> str:
-    paths = [f["path"] for f in files]
-    file_structure = "\n".join(paths[:100])
-    if len(paths) > 100:
-        file_structure += f"\n... and {len(paths) - 100} more files."
-        
-    top_contexts = []
-    important_keywords = ["app.py", "main.py", "index.js", "package.json", "requirements.txt", "setup.py", "cargo.toml", "go.mod"]
-    count = 0
-    for f in files:
-        path = f["path"]
-        if any(keyword in path.lower() for keyword in important_keywords):
-            content_str = f["content"]
-            if isinstance(content_str, bytes):
-                content_str = content_str.decode("utf-8", errors="ignore")
-            top_contexts.append(f"File: {path}\nContent:\n{content_str[:1500]}")
-            count += 1
-            if count >= 5:
-                break
-                
-    key_files_content = "\n\n".join(top_contexts)
-    
-    prompt = f"""
-You are an expert software architect. A user has uploaded a GitHub repository but it does not contain a README file.
-Please generate a simple, easy-to-understand explanation of the project.
-Include:
-1. **Purpose**: What is this project likely for?
-2. **Structure**: Outline the folder and file structure.
-3. **Design**: Describe the architecture, design patterns, or libraries utilized based on the file contents.
-
-Use beautiful, professional formatting with markdown.
-
-Here is the file structure:
-```
-{file_structure}
-```
-
-Here is the content of key files:
-{key_files_content}
-"""
-    try:
-        explanation = call_gemini(prompt, "You are a software architecture explanation generator.")
-        return explanation
-    except Exception as e:
-        return f"Failed to generate project explanation: {e}"
-
-def ensure_readme_or_explanation():
-    if st.session_state.get('last_repo_readme') or st.session_state.get('last_repo_explanation'):
-        return
-        
-    files = get_all_files()
-    if not files:
-        return
-        
-    readme_id = None
-    for f in files:
-        fname = f["filename"].lower()
-        if fname in ["readme.md", "readme.txt", "readme.markdown", "readme"] or fname.endswith("/readme.md") or fname.endswith("/readme.txt") or fname.endswith("/readme.markdown") or fname.endswith("/readme"):
-            readme_id = f["id"]
-            break
-            
-    if readme_id:
-        file_data = get_file_content(readme_id)
-        st.session_state['last_repo_readme'] = file_data.get("content")
-        st.session_state['last_repo_explanation'] = None
-        st.session_state['last_repo_name'] = "Currently Indexed Workspace"
-    else:
-        st.session_state['last_repo_readme'] = None
-        db_files = []
-        for f in files[:50]:
-            file_data = get_file_content(f["id"])
-            db_files.append({
-                "path": f["filename"],
-                "content": file_data.get("content", "")
-            })
-        
-        explanation = generate_project_explanation(db_files)
-        st.session_state['last_repo_explanation'] = explanation
-        st.session_state['last_repo_name'] = "Currently Indexed Workspace"
-
-
 
 def download_and_filter_repo(repo_url: str, branch: str) -> list:
     repo_path = parse_github_url(repo_url)
     if not repo_path:
-        raise ValueError("Invalid GitHub URL. Must be like https://github.com/username/repository")
-        
-    zip_url = f"https://github.com/{repo_path}/archive/refs/heads/{branch}.zip"
-    
-    req = urllib.request.Request(
-        zip_url,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-    try:
+        raise ValueError("Invalid GitHub URL. Use https://github.com/owner/repository")
+
+    def _fetch(ref):
+        req = urllib.request.Request(
+            f"https://github.com/{repo_path}/archive/refs/heads/{ref}.zip",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
         with urllib.request.urlopen(req) as response:
-            zip_data = response.read()
-    except Exception as e:
+            return response.read()
+
+    try:
+        zip_data = _fetch(branch)
+    except Exception:
         if branch == "main":
-            fallback_url = f"https://github.com/{repo_path}/archive/refs/heads/master.zip"
-            req = urllib.request.Request(
-                fallback_url,
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req) as response:
-                zip_data = response.read()
+            zip_data = _fetch("master")
         else:
-            raise e
-            
+            raise
+
+    allowed_exts = set(LANGUAGE_MAPPING) | {
+        "yml", "toml", "sql", "sh", "bat", "ini", "cfg", "properties", "xml", "csv",
+    }
+    allowed_names = {"dockerfile", "license", "procfile", "gemfile", "makefile"}
+
     files_list = []
     with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
         for name in z.namelist():
@@ -255,809 +126,603 @@ def download_and_filter_repo(repo_url: str, branch: str) -> list:
                 continue
             parts = name.split("/", 1)
             clean_name = parts[1] if len(parts) > 1 else name
-            
-            if any(p.startswith(".") for p in clean_name.split("/")) or "node_modules/" in clean_name or "venv/" in clean_name or "__pycache__/" in clean_name:
+
+            if (
+                any(p.startswith(".") for p in clean_name.split("/"))
+                or "node_modules/" in clean_name
+                or "venv/" in clean_name
+                or "__pycache__/" in clean_name
+            ):
                 continue
-                
-            # Filter out non-text/binary files using extension whitelist
-            ext = clean_name.split(".")[-1].lower() if "." in clean_name else ""
-            allowed_exts = set(list(LANGUAGE_MAPPING.keys()) + ["yml", "toml", "sql", "sh", "bat", "ini", "cfg", "properties", "xml", "csv"])
+
+            ext = clean_name.rsplit(".", 1)[-1].lower() if "." in clean_name else ""
             base_name = clean_name.split("/")[-1].lower()
-            
-            is_allowed = ext in allowed_exts or base_name in ["dockerfile", "license", "procfile", "gemfile", "makefile"]
-            if not is_allowed:
+            if ext not in allowed_exts and base_name not in allowed_names:
                 continue
-                
-            # Skip files larger than 300KB to prevent indexing massive scripts/assets
+
             try:
-                info = z.getinfo(name)
-                if info.file_size > 300 * 1024:
+                if z.getinfo(name).file_size > 300 * 1024:
                     continue
             except Exception:
                 pass
-                
+
             try:
-                content = z.read(name)
-                files_list.append({
-                    "path": clean_name,
-                    "content": content
-                })
+                files_list.append({"path": clean_name, "content": z.read(name)})
             except Exception:
                 pass
     return files_list
 
+
 def clone_and_index(repo_url: str, branch: str):
-    repo_path = parse_github_url(repo_url)
-    if not repo_path:
-        st.error("Invalid GitHub URL. Must be like https://github.com/username/repository")
+    if not parse_github_url(repo_url):
+        st.error("Invalid GitHub URL. Use https://github.com/owner/repository")
         return
-        
     if check_repo_private(repo_url):
-        st.error("This repository is private, so I can't access it.")
+        st.error("This repository is private, so it can't be accessed.")
         return
-        
+
     try:
         progress = st.progress(0)
-        status   = st.empty()
-        files    = download_and_filter_repo(repo_url, branch)
+        status = st.empty()
+        files = download_and_filter_repo(repo_url, branch)
         if not files:
-            st.warning("No valid text files found.")
+            st.warning("No indexable text files found in that repository.")
             progress.empty()
             return
-            
+
         for i, f in enumerate(files):
-            status.markdown(f'`Indexing {f["path"]}...`')
+            status.markdown(f"`Indexing {f['path']}`")
             insert_file_with_chunks(f)
             progress.progress((i + 1) / len(files))
-        # Extract files to disk for Live Runner execution
-        try:
-            extract_indexed_files_to_disk(repo_url, files)
-        except Exception as e:
-            logger.error(f"Failed to extract files to disk: {e}")
-            
+
         progress.empty()
-        status.success(f'✓  Indexed {len(files)} files from {repo_url}')
-        
-        # Check README
-        readme_file = None
-        for f in files:
-            p = f["path"].lower()
-            if p == "readme.md" or p.endswith("/readme.md") or p == "readme.txt" or p.endswith("/readme.txt"):
-                readme_file = f
-                break
-                
-        if readme_file:
-            content_str = readme_file["content"]
-            if isinstance(content_str, bytes):
-                content_str = content_str.decode("utf-8", errors="ignore")
-            st.session_state['last_repo_readme'] = content_str
-            st.session_state['last_repo_explanation'] = None
+        status.success(f"Indexed {len(files)} files from {repo_url}")
+
+        readme = next(
+            (
+                f
+                for f in files
+                if f["path"].lower() in ("readme.md", "readme.txt")
+                or f["path"].lower().endswith(("/readme.md", "/readme.txt"))
+            ),
+            None,
+        )
+        if readme:
+            content = readme["content"]
+            if isinstance(content, bytes):
+                content = content.decode("utf-8", errors="ignore")
+            st.session_state["last_repo_readme"] = content
+            st.session_state["last_repo_explanation"] = None
         else:
-            st.session_state['last_repo_readme'] = None
-            explanation = generate_project_explanation(files)
-            st.session_state['last_repo_explanation'] = explanation
-            
-        st.session_state['last_repo_name'] = repo_url
+            st.session_state["last_repo_readme"] = None
+            st.session_state["last_repo_explanation"] = generate_project_explanation(files)
+
+        st.session_state["last_repo_name"] = repo_url
         st.rerun()
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         st.error(f"Failed to clone and index repository: {ex}")
 
+
+# ══════════════════════════════════════════════════════════════════════
+# LLM-backed project explanation
+# ══════════════════════════════════════════════════════════════════════
+def call_gemini(prompt: str, system_instruction: str = "") -> str:
+    """Backwards-compatible name; routes through the active provider."""
+    return llm_service.generate(system_instruction, prompt)
+
+
+def generate_project_explanation(files: list) -> str:
+    paths = [f["path"] for f in files]
+    file_structure = "\n".join(paths[:100])
+    if len(paths) > 100:
+        file_structure += f"\n... and {len(paths) - 100} more files."
+
+    key_files = ["app.py", "main.py", "index.js", "package.json",
+                 "requirements.txt", "setup.py", "cargo.toml", "go.mod"]
+    contexts = []
+    for f in files:
+        if len(contexts) >= 5:
+            break
+        if any(k in f["path"].lower() for k in key_files):
+            content = f["content"]
+            if isinstance(content, bytes):
+                content = content.decode("utf-8", errors="ignore")
+            contexts.append(f"File: {f['path']}\nContent:\n{content[:1500]}")
+
+    prompt = f"""A user uploaded a GitHub repository that has no README.
+Generate a clear explanation of the project covering:
+1. **Purpose** — what is this project for?
+2. **Structure** — outline the folder and file layout.
+3. **Design** — architecture, patterns, and libraries used.
+
+Use professional markdown formatting.
+
+File structure:
+```
+{file_structure}
+```
+
+Key file contents:
+{chr(10).join(contexts)}
+"""
+    try:
+        return call_gemini(prompt, "You are an expert software architect.")
+    except llm_service.LLMNotConfigured as e:
+        return f"_{e}_"
+    except Exception as e:  # noqa: BLE001
+        return f"Failed to generate project explanation: {e}"
+
+
+def ensure_readme_or_explanation():
+    """Populate README/explanation state from the DB if a repo is already indexed."""
+    if st.session_state.get("last_repo_readme") or st.session_state.get(
+        "last_repo_explanation"
+    ):
+        return
+
+    files = get_all_files()
+    if not files:
+        return
+
+    readme_id = next(
+        (
+            f["id"]
+            for f in files
+            if f["filename"].lower() in ("readme.md", "readme.txt", "readme.markdown", "readme")
+            or f["filename"].lower().endswith(("/readme.md", "/readme.txt"))
+        ),
+        None,
+    )
+
+    st.session_state["last_repo_name"] = st.session_state.get(
+        "last_repo_name", "Currently Indexed Workspace"
+    )
+
+    if readme_id:
+        st.session_state["last_repo_readme"] = get_file_content(readme_id).get("content")
+        st.session_state["last_repo_explanation"] = None
+    else:
+        st.session_state["last_repo_readme"] = None
+        db_files = [
+            {"path": f["filename"], "content": get_file_content(f["id"]).get("content", "")}
+            for f in files[:50]
+        ]
+        st.session_state["last_repo_explanation"] = generate_project_explanation(db_files)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Static frontend preview — asset inlining
+# ══════════════════════════════════════════════════════════════════════
+def _load_ingested_assets() -> dict:
+    """Map of repo-relative path -> text content, read from SQLite."""
+    return {
+        f["filename"]: (get_file_content(f["id"]).get("content") or "")
+        for f in get_all_files()
+    }
+
+
+def _is_external(url: str) -> bool:
+    return url.startswith(("http://", "https://", "//", "data:", "#"))
+
+
+def _attr(tag: str, name: str):
+    m = re.search(rf'{name}\s*=\s*["\']([^"\']+)["\']', tag, re.I)
+    return m.group(1) if m else None
+
+
+def _resolve(base_dir: str, ref: str) -> str:
+    ref = ref.split("?")[0].split("#")[0]
+    joined = posixpath.normpath(posixpath.join(base_dir, ref))
+    return joined.lstrip("./")
+
+
+def inline_html(html_path: str, assets: dict):
+    """Return (self_contained_html, skipped_refs).
+
+    st.components.v1.html renders into a srcdoc iframe with no base URL, so every
+    relative reference must be inlined or it silently 404s.
+    """
+    base_dir = posixpath.dirname(html_path)
+    html = assets.get(html_path, "")
+    skipped = []
+
+    def repl_link(m):
+        tag = m.group(0)
+        if "stylesheet" not in tag.lower():
+            return tag
+        href = _attr(tag, "href")
+        if not href or _is_external(href):
+            return tag
+        key = _resolve(base_dir, href)
+        if key in assets:
+            return f"<style>\n{assets[key]}\n</style>"
+        skipped.append(href)
+        return tag
+
+    html = re.sub(r"<link\b[^>]*>", repl_link, html, flags=re.I)
+
+    def repl_script(m):
+        tag = m.group(0)
+        src = _attr(tag, "src")
+        if not src or _is_external(src):
+            return tag
+        key = _resolve(base_dir, src)
+        if key in assets:
+            # Guard against a literal </script> inside the JS closing the tag early.
+            js = assets[key].replace("</script>", "<\\/script>")
+            return f"<script>\n{js}\n</script>"
+        skipped.append(src)
+        return tag
+
+    html = re.sub(r"<script\b[^>]*\bsrc\s*=[^>]*>\s*</script>", repl_script, html, flags=re.I)
+
+    # Images are excluded by the ingestion whitelist, so these almost always miss.
+    for m in re.finditer(r'<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']', html, re.I):
+        src = m.group(1)
+        if not _is_external(src) and _resolve(base_dir, src) not in assets:
+            skipped.append(src)
+
+    return html, sorted(set(skipped))
+
+
+def _looks_like_spa(html: str, assets: dict) -> bool:
+    has_root = re.search(r'<div\s+id\s*=\s*["\'](root|app)["\']', html, re.I)
+    bundles = re.findall(r'src\s*=\s*["\']([^"\']*(?:main|index)\.[a-f0-9]{6,}\.js)["\']', html, re.I)
+    missing_bundle = any(b.lstrip("/") not in assets for b in bundles)
+    return bool(has_root) and (missing_bundle or not bundles)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Sections
+# ══════════════════════════════════════════════════════════════════════
+def render_overview():
+    section_header("Overview", "Workspace status and indexed content at a glance.")
+
+    files = get_all_files()
+    if not files:
+        empty_state("◔", "Nothing indexed yet",
+                    "Head to Ingest Repository to analyze your first codebase.")
+        return
+
+    source_files = [f for f in files if f["file_type"] == "source_code"]
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        metric_card("☰", "Files indexed", get_file_count(), tone="accent")
+    with c2:
+        metric_card("◆", "Source files", len(source_files), tone="low")
+    with c3:
+        metric_card("⬡", "Chunks embedded", get_chunk_count(), tone="info")
+    with c4:
+        metric_card("▤", "Content size", get_storage_label(), tone="success")
+
+    st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+
+    if not llm_service.embeddings_available():
+        st.info(
+            "No Gemini key found, so chunks are stored without embeddings and search "
+            "falls back to keyword matching. Add a Gemini key in Settings to enable "
+            "semantic search. (Your chat provider is unaffected.)"
+        )
+
+    left, right = st.columns([1, 1])
+    with left:
+        st.markdown('<div class="dp-overline">Languages</div>', unsafe_allow_html=True)
+        langs = get_language_breakdown()
+        if langs:
+            for lang, count in langs.items():
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'padding:6px 0;border-bottom:1px solid var(--border);">'
+                    f'<span style="color:var(--text-primary);font-size:0.875rem">{lang}</span>'
+                    f'<span style="color:var(--text-muted);font-size:0.875rem">{count}</span>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+    with right:
+        st.markdown('<div class="dp-overline">Repository</div>', unsafe_allow_html=True)
+        repo = st.session_state.get("last_repo_name", "—")
+        st.markdown(
+            f'<div style="color:var(--text-primary);font-size:0.9rem;padding:6px 0">{repo}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+SAMPLE_REPOS = [
+    ("Vulnerable Flask App", "https://github.com/we45/Vulnerable-Flask-App", "master",
+     "Python · scores F"),
+    ("Damn Vulnerable Web App", "https://github.com/anxolerd/dvpwa", "master",
+     "Python · planted bugs"),
+    ("Spoon-Knife", "https://github.com/octocat/Spoon-Knife", "main",
+     "HTML · try Preview"),
+]
+
+
 def render_ingestion_section():
-    st.markdown("### 🐙  GitHub Repository Ingestion")
-    repo_url = st.text_input('GitHub URL',
-        placeholder='https://github.com/owner/repo')
-    branch = st.text_input('Branch', value='main')
-    col_clone, col_info = st.columns([2,1])
-    with col_clone:
-        if st.button('⬇  Analyze Repository', use_container_width=True):
+    section_header("Ingest Repository",
+                   "Download a public GitHub repository and index it for analysis.")
+
+    st.session_state.setdefault("ingest_url", "")
+    st.session_state.setdefault("ingest_branch", "main")
+
+    st.markdown('<div class="dp-overline">Try a sample repository</div>',
+                unsafe_allow_html=True)
+    cols = st.columns(len(SAMPLE_REPOS))
+    for col, (name, url, branch, note) in zip(cols, SAMPLE_REPOS):
+        with col:
+            if st.button(name, key=f"sample_{name}", use_container_width=True):
+                st.session_state["ingest_url"] = url
+                st.session_state["ingest_branch"] = branch
+                st.rerun()
+            st.caption(note)
+
+    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+
+    repo_url = st.text_input("GitHub URL", key="ingest_url",
+                             placeholder="https://github.com/owner/repo")
+    branch = st.text_input("Branch", key="ingest_branch")
+
+    col, _ = st.columns([1, 2])
+    with col:
+        if st.button("Analyze Repository", type="primary", use_container_width=True):
             if repo_url:
                 clone_and_index(repo_url, branch)
             else:
-                st.error("Please enter a repository URL.")
-                
-    with st.expander("ℹ️  Limitations & Technical Notes"):
-        st.markdown("""
-        * **Private Repositories:** Private repositories cannot be accessed because the application operates without GitHub API credentials (Personal Access Tokens). Attempts to clone them will be automatically detected and blocked with a warning message.
-        * **API Rate Limits:** Unauthenticated requests to GitHub's REST API and ZIP download endpoints share public rate limits. Excessive requests may trigger temporary blocks.
-        * **Repository Size:** Extremely large codebases may hit container execution limits (512MB RAM on free-tier hosting) or timeout during vector embedding generation.
-        * **Binary/Boilerplate Filtering:** Media files, zip files, and build/dependency folders (like `node_modules/`, `venv/`, `.git/`) are automatically excluded from indexing to optimize performance.
-        """)
+                st.error("Enter a repository URL first.")
+
+    with st.expander("Limitations & technical notes"):
+        st.markdown(
+            """
+* **Private repositories** are not accessible — no GitHub token is configured.
+* **Rate limits** apply to unauthenticated GitHub API and ZIP requests.
+* **Large repositories** may hit free-tier memory limits or time out while embedding.
+* **Filtered out:** binaries, images, `node_modules/`, `venv/`, dotfiles, and files over 300&nbsp;KB.
+"""
+        )
+
+
+def render_project_overview():
+    section_header("Project Overview", "README, or an AI-generated explanation if none exists.")
+
+    ensure_readme_or_explanation()
+    repo = st.session_state.get("last_repo_name")
+    if not repo:
+        empty_state("◇", "No repository analyzed",
+                    "Ingest a repository to see its overview here.")
+        return
+
+    st.caption(f"Showing analysis for {repo}")
+    readme = st.session_state.get("last_repo_readme")
+    explanation = st.session_state.get("last_repo_explanation")
+
+    if readme:
+        st.success("README detected in repository")
+        st.markdown("---")
+        st.markdown(readme)
+    elif explanation:
+        st.warning("No README found — showing an AI-generated explanation")
+        st.markdown("---")
+        st.markdown(explanation)
+    else:
+        empty_state("◇", "Nothing to show", "No README or explanation available.")
+
+
+def render_static_preview():
+    section_header("Static Preview",
+                   "Render a repository's frontend (HTML/CSS/JS). No backend is executed.")
+
+    assets = _load_ingested_assets()
+    htmls = sorted(p for p in assets if p.lower().endswith(".html"))
+
+    if not assets:
+        empty_state("▣", "Nothing indexed yet", "Ingest a repository first.")
+        return
+
+    if not htmls:
+        st.info(
+            "**No static frontend detected.** This looks like a backend or library "
+            "project — there is no HTML file to render. Try the Project Overview or "
+            "Security Audit sections instead."
+        )
+        return
+
+    # Prefer a built bundle, then a root index.html, then anything.
+    def _rank(p):
+        low = p.lower()
+        return (
+            0 if low in ("dist/index.html", "build/index.html") else
+            1 if low == "index.html" else
+            2 if low.endswith("/index.html") else 3
+        )
+
+    htmls.sort(key=_rank)
+    choice = st.selectbox("HTML file to preview", htmls)
+
+    assembled, skipped = inline_html(choice, assets)
+
+    if _looks_like_spa(assembled, assets):
+        st.warning(
+            "This looks like a React/Vue single-page app that needs a build step. "
+            "The preview cannot run a build. If the repo ships a built `dist/` or "
+            "`build/index.html`, select that file above instead."
+        )
+
+    if skipped:
+        with st.expander(f"{len(skipped)} referenced asset(s) not available"):
+            st.caption(
+                "These were excluded by the ingestion filter (images, binaries, or "
+                "files over 300 KB). External CDN links still load normally."
+            )
+            for ref in skipped:
+                st.markdown(f"- `{ref}`")
+
+    height = st.slider("Preview height", 300, 1200, 700, 50)
+    st.components.v1.html(assembled, height=height, scrolling=True)
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        st.download_button(
+            "Download self-contained HTML",
+            assembled,
+            file_name="preview.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+    with col_b:
+        b64 = base64.b64encode(assembled.encode("utf-8")).decode("ascii")
+        st.markdown(
+            f'<a href="data:text/html;base64,{b64}" target="_blank" '
+            f'style="display:block;text-align:center;padding:8px 16px;'
+            f"border:1px solid var(--border);border-radius:var(--radius-md);"
+            f'text-decoration:none;font-size:0.9rem;">Open in new tab</a>',
+            unsafe_allow_html=True,
+        )
+
+    if st.toggle("Show assembled source"):
+        st.code(assembled, language="html")
+
 
 def render_files_table():
-    st.markdown('#### 🗄️  Indexed Files')
-    
-    col_search, col_wipe = st.columns([5, 1])
-    with col_search:
-        search = st.text_input('', placeholder='🔍  Filter by filename...',
-            label_visibility='collapsed')
-    with col_wipe:
-        if st.button('🗑️ Wipe DB', use_container_width=True):
-            wipe_all()
-            if 'last_repo_readme' in st.session_state:
-                del st.session_state['last_repo_readme']
-            if 'last_repo_explanation' in st.session_state:
-                del st.session_state['last_repo_explanation']
-            if 'last_repo_name' in st.session_state:
-                del st.session_state['last_repo_name']
-            if 'chat_history' in st.session_state:
-                st.session_state['chat_history'] = []
-            st.success("Database wiped successfully!")
-            st.rerun()
-            
+    section_header("Indexed Files", "Everything currently stored in the local index.")
+
     files = get_all_files()
+    if not files:
+        empty_state("☰", "No files indexed", "Ingest a repository to populate the index.")
+        return
+
+    search = st.text_input("Filter", placeholder="Filter by filename…",
+                           label_visibility="collapsed")
     if search:
-        files = [f for f in files if search.lower() in f['filename'].lower()]
+        files = [f for f in files if search.lower() in f["filename"].lower()]
     if not files:
-        st.info('No files indexed yet.')
+        st.caption("No files match that filter.")
         return
-        
-    st.markdown('''
-    <div style="display:flex; font-weight:700; color:#00f0ff; padding-bottom:8px; border-bottom:1px solid rgba(0,240,255,0.25); font-size:0.8rem; font-family:'Space Grotesk',sans-serif;">
-        <div style="flex: 3.5;">FILENAME</div>
-        <div style="flex: 1.5;">TYPE</div>
-        <div style="flex: 1;">LANGUAGE</div>
-        <div style="flex: 1;">SIZE</div>
-        <div style="flex: 0.7; text-align: center;">DEL</div>
-    </div>
-    ''', unsafe_allow_html=True)
-    
+
+    st.markdown(
+        '<div class="dp-th">'
+        '<div style="flex:3.5">Filename</div><div style="flex:1.5">Type</div>'
+        '<div style="flex:1">Language</div><div style="flex:1">Size</div>'
+        '<div style="flex:0.7;text-align:center">Del</div></div>',
+        unsafe_allow_html=True,
+    )
+
     for f in files:
-        c1,c2,c3,c4,c5 = st.columns([3.5, 1.5, 1, 1, 0.7])
-        c1.write(f['filename'])
-        c2.caption(f['file_type'])
-        c3.caption(f['language'] or '—')
-        size_kb = f"{f['size_bytes']//1024} KB" if f.get('size_bytes') else '0 KB'
-        c4.caption(size_kb)
-        if c5.button('🗑️', key=f"d_{f['id']}", use_container_width=True):
-            delete_file(f['id'])
-            # Reset explanation if database becomes empty
-            remaining = get_all_files()
-            if not remaining:
-                if 'last_repo_readme' in st.session_state:
-                    del st.session_state['last_repo_readme']
-                if 'last_repo_explanation' in st.session_state:
-                    del st.session_state['last_repo_explanation']
-                if 'last_repo_name' in st.session_state:
-                    del st.session_state['last_repo_name']
-            st.rerun()
-
-def detect_run_command(cloned_dir: str) -> dict:
-    res = {
-        "file": "",
-        "command": "",
-        "needs_setup": False,
-        "setup_command": ""
-    }
-    if not os.path.exists(cloned_dir):
-        return res
-        
-    has_reqs = os.path.exists(os.path.join(cloned_dir, "requirements.txt"))
-    if has_reqs:
-        res["needs_setup"] = True
-        res["setup_command"] = "python -m pip install -r requirements.txt"
-        
-    # Scan files
-    files = []
-    for root, dirs, filenames in os.walk(cloned_dir):
-        for f in filenames:
-            ext = f.split(".")[-1].lower() if "." in f else ""
-            if ext in ["py", "js", "bat", "sh"]:
-                rel_path = os.path.relpath(os.path.join(root, f), cloned_dir)
-                files.append((rel_path, ext))
-                
-    if not files:
-        return res
-        
-    # Prioritize app.py, main.py, index.js, etc.
-    priority_files = ["app.py", "main.py", "index.js", "app.js", "main.js"]
-    selected_file = None
-    selected_ext = None
-    
-    for pf in priority_files:
-        for f, ext in files:
-            if f.lower() == pf or f.lower().endswith("/" + pf):
-                selected_file = f
-                selected_ext = ext
-                break
-        if selected_file:
-            break
-            
-    if not selected_file:
-        # Check if any python file imports streamlit
-        streamlit_files = []
-        for f, ext in files:
-            if ext == "py":
-                file_abs = os.path.join(cloned_dir, f)
-                try:
-                    with open(file_abs, "r", encoding="utf-8", errors="ignore") as file_in:
-                        content = file_in.read()
-                        if "import streamlit" in content or "from streamlit" in content:
-                            streamlit_files.append((f, ext))
-                except Exception:
-                    pass
-        if streamlit_files:
-            selected_file, selected_ext = streamlit_files[0]
-            
-    if not selected_file:
-        non_setup_files = [x for x in files if "setup" not in x[0].lower() and "install" not in x[0].lower()]
-        if non_setup_files:
-            selected_file, selected_ext = non_setup_files[0]
-        else:
-            selected_file, selected_ext = files[0]
-            
-    res["file"] = selected_file
-    
-    # Determine command
-    if selected_ext == "py":
-        file_abs = os.path.join(cloned_dir, selected_file)
-        is_streamlit = False
-        try:
-            with open(file_abs, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-                if "import streamlit" in content or "from streamlit" in content:
-                    is_streamlit = True
-        except Exception:
-            pass
-            
-        if is_streamlit:
-            res["command"] = f"python -m streamlit run \"{selected_file}\" --server.port 8501"
-        else:
-            res["command"] = f"python -u \"{selected_file}\""
-    elif selected_ext == "js":
-        res["command"] = f"node \"{selected_file}\""
-    else:
-        res["command"] = f"./\"{selected_file}\"" if os.name != "nt" else f"\"{selected_file}\""
-        
-    return res
-
-def get_cloudflared_binary():
-    import platform
-    system = platform.system().lower()
-    if system == "windows":
-        filename = "cloudflared.exe"
-        url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-    elif system == "linux":
-        filename = "cloudflared"
-        url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
-    elif system == "darwin":
-        filename = "cloudflared"
-        url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64"
-    else:
-        return None, None
-        
-    binary_path = os.path.join(os.getcwd(), filename)
-    return binary_path, url
-
-def ensure_cloudflared():
-    binary_path, url = get_cloudflared_binary()
-    if not binary_path:
-        return None
-        
-    if not os.path.exists(binary_path):
-        import urllib.request
-        try:
-            # Download synchronously but let it be fast
-            urllib.request.urlretrieve(url, binary_path)
-            if os.name != 'nt':
-                os.chmod(binary_path, 0o755)
-        except Exception as e:
-            logging.error(f"Failed to download cloudflared: {e}")
-            return None
-    return binary_path
-
-def start_tunnel(port):
-    stop_tunnel()
-    binary_path = ensure_cloudflared()
-    if not binary_path:
-        logging.error("Cloudflared binary not available.")
-        return
-        
-    cmd = f'"{binary_path}" tunnel --url http://localhost:{port}'
-    try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            shell=True
+        c1, c2, c3, c4, c5 = st.columns([3.5, 1.5, 1, 1, 0.7])
+        c1.markdown(
+            f'<div style="color:var(--text-primary);font-size:0.875rem;padding-top:6px">'
+            f'{f["filename"]}</div>',
+            unsafe_allow_html=True,
         )
-        st.session_state["tunnel_process"] = process
-        
-        def parse_url(proc):
-            try:
-                for line in iter(proc.stdout.readline, ''):
-                    match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
-                    if match:
-                        url = match.group(0)
-                        st.session_state["tunnel_url"] = url
-                        break
-            except Exception:
-                pass
-                
-        t = threading.Thread(target=parse_url, args=(process,))
-        t.daemon = True
-        t.start()
-    except Exception as e:
-        logging.error(f"Failed to start Cloudflare tunnel: {e}")
-
-def stop_tunnel():
-    proc = st.session_state.get("tunnel_process")
-    if proc:
-        try:
-            if os.name == 'nt':
-                subprocess.run(f"taskkill /F /T /PID {proc.pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                import signal
-                try:
-                    os.kill(proc.pid, signal.SIGTERM)
-                except Exception:
-                    proc.terminate()
-        except Exception:
-            pass
-        st.session_state["tunnel_process"] = None
-    st.session_state["tunnel_url"] = None
-
-def check_and_start_tunnel(command_str):
-    port = None
-    port_match = re.search(r'(?:--port|-p|--server\.port)\s+(\d+)', command_str)
-    if port_match:
-        port = int(port_match.group(1))
-    else:
-        for p in ["8501", "3000", "5000", "8000", "8080"]:
-            if p in command_str:
-                port = int(p)
-                break
-    if "streamlit" in command_str.lower() and not port:
-        port = 8501
-    if port:
-        start_tunnel(port)
-
-def render_live_runner():
-    st.markdown("### ⚡ Live Runner")
-    st.write("Execute runnable files (.py, .js, .bat, .sh) from the analyzed repository locally.")
-    
-    last_exit = st.session_state.get("last_exit_code")
-    if last_exit is not None:
-        if last_exit == 0:
-            st.success("✓ Process finished successfully (exit code 0)")
-        elif last_exit == -1:
-            st.warning("⚠️ Process terminated by user")
-        else:
-            st.error(f"✗ Process failed (exit code {last_exit})")
-        st.session_state["last_exit_code"] = None
-        
-    last_repo = st.session_state.get('last_repo_name')
-    if not last_repo:
-        st.info("No repository has been analyzed yet. Please ingest a repository first.")
-        return
-        
-    repo_path = parse_github_url(last_repo)
-    if not repo_path:
-        st.error("Invalid repository URL stored.")
-        return
-        
-    safe_dir_name = repo_path.replace("/", "_")
-    cloned_dir = os.path.join("cloned_runs", safe_dir_name)
-    
-    if not os.path.exists(cloned_dir):
-        st.info("Local repository files do not exist on disk. Please re-analyze the repository to extract files.")
-        return
-        
-    # Scan for executable files
-    exec_files = []
-    for root, dirs, files in os.walk(cloned_dir):
-        for f in files:
-            ext = f.split(".")[-1].lower() if "." in f else ""
-            if ext in ["py", "js", "bat", "sh"]:
-                rel_path = os.path.relpath(os.path.join(root, f), cloned_dir)
-                exec_files.append(rel_path)
-                
-    if not exec_files:
-        st.warning("No runnable files (.py, .js, .bat, .sh) found in the repository.")
-        return
-        
-    # Detect default commands for auto-setup/run
-    detected = detect_run_command(cloned_dir)
-    
-    st.markdown("#### 🤖 Automated Project Setup & Execution")
-    st.write("Let the system automatically setup and launch the repository for you.")
-    
-    cols_auto = st.columns([3, 1])
-    with cols_auto[0]:
-        st.markdown(f"**Detected Runner Target:** `{detected['file']}`")
-        if detected['needs_setup']:
-            st.markdown(f"**Setup Command:** `{detected['setup_command']}` ➔ **Run Command:** `{detected['command']}`")
-        else:
-            st.markdown(f"**Run Command:** `{detected['command']}`")
-            
-    running_process = st.session_state.get("running_process")
-    pending_commands = st.session_state.get("pending_commands", [])
-    
-    with cols_auto[1]:
-        auto_btn = st.button("🚀 Auto-Setup & Run", disabled=(running_process is not None), use_container_width=True)
-        
-    if auto_btn:
-        st.session_state["pending_commands"] = []
-        if detected['needs_setup']:
-            setup_cmd = detected['setup_command']
-            st.session_state["pending_commands"] = [detected['command']]
-            cmd_to_run = setup_cmd
-        else:
-            cmd_to_run = detected['command']
-            
-        cmd = shlex.split(cmd_to_run.strip())
-        if cmd:
-            if cmd[0] in ["python", "python3", "python.exe"]:
-                cmd[0] = sys.executable
-            elif cmd[0] == "streamlit":
-                cmd = [sys.executable, "-m", "streamlit"] + cmd[1:]
-                
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                cwd=cloned_dir
-            )
-            q = queue.Queue()
-            t = threading.Thread(target=read_output_stream, args=(process, q))
-            t.daemon = True
-            t.start()
-            
-            if not detected['needs_setup']:
-                check_and_start_tunnel(detected['command'])
-                
-            st.session_state["running_process"] = process
-            st.session_state["process_queue"] = q
-            st.session_state["console_logs"] = [f"$ {cmd_to_run.strip()}\n"]
+        c2.markdown(
+            f'<div style="padding-top:6px">{file_type_chip(f["file_type"])}</div>',
+            unsafe_allow_html=True,
+        )
+        c3.caption(f["language"] or "—")
+        size = f.get("size_bytes") or 0
+        c4.caption(f"{size // 1024} KB" if size >= 1024 else f"{size} B")
+        if c5.button("✕", key=f"del_{f['id']}", use_container_width=True):
+            delete_file(f["id"])
+            for k in ("last_repo_readme", "last_repo_explanation", "last_repo_name"):
+                st.session_state.pop(k, None)
             st.rerun()
-        except Exception as e:
-            st.error(f"Failed to auto-start process: {e}")
-            
+
+
+def render_settings():
+    section_header("Settings", "Choose your model provider, paste a key, and tune the UI.")
+
+    providers = list(llm_service.PROVIDERS)
+
+    st.markdown('<div class="dp-overline">Model provider</div>', unsafe_allow_html=True)
+    provider = st.selectbox(
+        "Provider",
+        providers,
+        format_func=lambda p: llm_service.PROVIDERS[p]["label"],
+        key="llm_provider",
+    )
+    meta = llm_service.PROVIDERS[provider]
+
+    # Reset the model if it doesn't belong to the newly-selected provider.
+    if st.session_state.get("llm_model") not in meta["models"]:
+        st.session_state["llm_model"] = meta["models"][0]
+    st.selectbox("Model", meta["models"], key="llm_model")
+
+    entered = st.text_input(
+        f"{meta['label']} API key",
+        type="password",
+        value=st.session_state.get(f"api_key_{provider}", ""),
+        help=f"Get a key at {meta['keys_url']}",
+    )
+
+    c1, c2, _ = st.columns([1, 1, 2])
+    with c1:
+        if st.button("Save", type="primary", use_container_width=True):
+            st.session_state[f"api_key_{provider}"] = entered.strip()
+            st.success("Saved for this session.")
+            st.rerun()
+    with c2:
+        if st.button("Test connection", use_container_width=True):
+            key = entered.strip() or llm_service.resolve_key(provider)[0]
+            ok, msg = llm_service.test_connection(provider, key)
+            (st.success if ok else st.error)(msg)
+
+    key, source = llm_service.resolve_key(provider)
+    source_label = {"session": "entered here", "env": "environment variable",
+                    "none": "not configured"}[source]
+    st.caption(
+        f"Active: **{meta['label']}** · `{llm_service.active_model(provider)}` · "
+        f"key {llm_service.mask_key(key)} ({source_label})"
+    )
+    st.caption(
+        "Keys are held in memory for this session only and are never written to disk. "
+        "Re-enter after a restart, or set the environment variable on your host."
+    )
+
     st.markdown("---")
-    st.markdown("#### ⚙️ Manual Configuration")
-    
-    selected_file = st.selectbox("Select File to Run", exec_files)
-    
-    # Check for empty/incomplete duckdb file
-    db_file_path = os.path.join(cloned_dir, "instacart.duckdb")
-    if os.path.exists(db_file_path):
-        size_mb = os.path.getsize(db_file_path) / (1024 * 1024)
-        if size_mb < 50:
-            st.warning(f"⚠️ **Empty/Incomplete Database Detected:** An empty database file `{db_file_path}` of size {size_mb:.2f} MB was found (probably created by running setup_db.py without CSV files). This will block `app.py` from automatically downloading the pre-built 1.2GB database from Google Drive.")
-            if st.button("🗑️ Delete Empty Database File"):
-                try:
-                    os.remove(db_file_path)
-                    st.success("✓ Deleted instacart.duckdb successfully! You can now run app.py to auto-download the database.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to delete database: {e}")
-                    
-    # Auto-generate default command based on selection
-    default_cmd = ""
-    if selected_file:
-        ext = selected_file.split(".")[-1].lower()
-        if ext == "py":
-            # Check if file imports streamlit
-            file_abs = os.path.join(cloned_dir, selected_file)
-            is_streamlit = False
-            try:
-                with open(file_abs, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                    if "import streamlit" in content or "from streamlit" in content:
-                        is_streamlit = True
-            except Exception:
-                pass
-                
-            if is_streamlit:
-                default_cmd = f"python -m streamlit run \"{selected_file}\" --server.port 8501"
-            else:
-                default_cmd = f"python -u \"{selected_file}\""
-        elif ext == "js":
-            default_cmd = f"node \"{selected_file}\""
-        else:
-            default_cmd = f"./\"{selected_file}\"" if os.name != "nt" else f"\"{selected_file}\""
 
-    run_cmd_input = st.text_input("Command to Execute", value=default_cmd)
-    
-    if "streamlit" in run_cmd_input.lower():
-        st.info("💡 **Streamlit Application Detected:** Running this command will start a Streamlit server in the background. If you are running locally, you can open the app in your browser (usually at http://localhost:8501). If running on Render, the server port is isolated but you will see the logs below.")
-        
-    has_reqs = os.path.exists(os.path.join(cloned_dir, "requirements.txt"))
-    
-    col_actions = st.columns([1, 1, 2])
-    
-    with col_actions[0]:
-        run_btn = st.button("⚡ Run Code", disabled=(running_process is not None), use_container_width=True)
-    with col_actions[1]:
-        terminate_btn = st.button("🛑 Terminate", disabled=(running_process is None), use_container_width=True)
-    with col_actions[2]:
-        if has_reqs:
-            install_btn = st.button("📦 Install Dependencies (pip)", disabled=(running_process is not None), use_container_width=True)
-        else:
-            install_btn = False
-            
-    if run_btn:
-        st.session_state["pending_commands"] = []
-        cmd = shlex.split(run_cmd_input.strip())
-        if cmd:
-            # Map python/streamlit to environment executable
-            if cmd[0] in ["python", "python3", "python.exe"]:
-                cmd[0] = sys.executable
-            elif cmd[0] == "streamlit":
-                cmd = [sys.executable, "-m", "streamlit"] + cmd[1:]
-                
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                cwd=cloned_dir
-            )
-            q = queue.Queue()
-            t = threading.Thread(target=read_output_stream, args=(process, q))
-            t.daemon = True
-            t.start()
-            
-            check_and_start_tunnel(run_cmd_input)
-            
-            st.session_state["running_process"] = process
-            st.session_state["process_queue"] = q
-            st.session_state["console_logs"] = [f"$ {run_cmd_input.strip()}\n"]
+    # ── Embeddings ────────────────────────────────────────────────────
+    st.markdown('<div class="dp-overline">Semantic search (optional)</div>',
+                unsafe_allow_html=True)
+    st.caption(
+        "Vector search uses Google's `text-embedding-004`, so it needs a Gemini key "
+        "regardless of the chat provider above. Without one, search falls back to "
+        "keyword matching — nothing breaks."
+    )
+    if provider != llm_service.EMBEDDING_PROVIDER:
+        emb = st.text_input(
+            "Gemini API key for embeddings",
+            type="password",
+            value=st.session_state.get("api_key_gemini", ""),
+        )
+        if st.button("Save embeddings key"):
+            st.session_state["api_key_gemini"] = emb.strip()
+            st.success("Saved.")
             st.rerun()
-        except Exception as e:
-            st.error(f"Failed to start process: {e}")
-            
-    if install_btn:
-        st.session_state["pending_commands"] = []
-        cmd = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-                cwd=cloned_dir
-            )
-            q = queue.Queue()
-            t = threading.Thread(target=read_output_stream, args=(process, q))
-            t.daemon = True
-            t.start()
-            
-            st.session_state["running_process"] = process
-            st.session_state["process_queue"] = q
-            st.session_state["console_logs"] = [f"$ {' '.join(cmd)}\n"]
+    status = "enabled" if llm_service.embeddings_available() else "disabled (keyword-only)"
+    st.caption(f"Semantic search is currently **{status}**.")
+
+    st.markdown("---")
+
+    # ── Appearance ────────────────────────────────────────────────────
+    st.markdown('<div class="dp-overline">Appearance</div>', unsafe_allow_html=True)
+    st.selectbox(
+        "Theme",
+        ["auto", "light", "dark"],
+        key="ui_theme",
+        help="'auto' follows your operating system setting.",
+    )
+
+    st.markdown("---")
+
+    # ── Danger zone ───────────────────────────────────────────────────
+    st.markdown('<div class="dp-overline">Danger zone</div>', unsafe_allow_html=True)
+    st.caption("Deletes every indexed file, chunk embedding, query log, and audit report.")
+    confirm = st.text_input("Type DELETE to confirm")
+    if st.button("Wipe all data"):
+        if confirm == "DELETE":
+            wipe_all()
+            for k in ("last_repo_readme", "last_repo_explanation", "last_repo_name",
+                      "last_audit"):
+                st.session_state.pop(k, None)
+            st.success("All data wiped.")
             st.rerun()
-        except Exception as e:
-            st.error(f"Failed to start dependency installation: {e}")
-            
-    if terminate_btn and running_process:
-        stop_tunnel()
-        running_process.terminate()
-        st.session_state["running_process"] = None
-        st.session_state["process_queue"] = None
-        st.session_state["pending_commands"] = []
-        st.session_state["last_exit_code"] = -1
-        st.success("Process terminated by user.")
-        st.rerun()
-        
-    q = st.session_state.get("process_queue")
-    logs = st.session_state.get("console_logs", [])
-    
-    tunnel_url = st.session_state.get("tunnel_url")
-    if tunnel_url:
-        st.markdown("---")
-        st.markdown("### 🟢 Live Interactive Interface")
-        st.success(f"✓ Your application is running live at: {tunnel_url}")
-        st.info("💡 **Tip:** Interact with your application directly using the embedded frame below, or click **Open in New Tab** to view it in full screen.")
-        
-        col_lt1, col_lt2 = st.columns([1.5, 3.5])
-        with col_lt1:
-            st.markdown(f'<a href="{tunnel_url}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:45px; background-color:#00f0ff; color:#0e1117; font-weight:bold; border:none; border-radius:4px; cursor:pointer; font-family:\'Space Grotesk\', sans-serif;">🔗 Open in New Tab</button></a>', unsafe_allow_html=True)
-            
-        st.components.v1.iframe(tunnel_url, height=650, scrolling=True)
-
-    if logs:
-        st.markdown("**Console Output:**")
-        log_placeholder = st.empty()
-        
-        if q:
-            while not q.empty():
-                try:
-                    line = q.get_nowait()
-                    logs.append(line)
-                except queue.Empty:
-                    break
-                    
-        log_text = "".join(logs)
-        log_placeholder.code(log_text, language="bash")
-        
-        if running_process:
-            if running_process.poll() is None:
-                time.sleep(0.1)
-                st.rerun()
-            else:
-                if q:
-                    while not q.empty():
-                        try:
-                            line = q.get_nowait()
-                            logs.append(line)
-                        except queue.Empty:
-                            break
-                    log_placeholder.code("".join(logs), language="bash")
-                exit_code = running_process.returncode
-                
-                # Check for pending chained commands (like auto-setup transitioning to run)
-                pending = st.session_state.get("pending_commands", [])
-                if exit_code == 0 and pending:
-                    next_cmd_str = pending.pop(0)
-                    st.session_state["pending_commands"] = pending
-                    
-                    cmd = shlex.split(next_cmd_str.strip())
-                    if cmd:
-                        if cmd[0] in ["python", "python3", "python.exe"]:
-                            cmd[0] = sys.executable
-                        elif cmd[0] == "streamlit":
-                            cmd = [sys.executable, "-m", "streamlit"] + cmd[1:]
-                            
-                    try:
-                        next_process = subprocess.Popen(
-                            cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            errors="replace",
-                            cwd=cloned_dir
-                        )
-                        next_q = queue.Queue()
-                        next_t = threading.Thread(target=read_output_stream, args=(next_process, next_q))
-                        next_t.daemon = True
-                        next_t.start()
-                        
-                        check_and_start_tunnel(next_cmd_str)
-                        
-                        st.session_state["running_process"] = next_process
-                        st.session_state["process_queue"] = next_q
-                        st.session_state["console_logs"].append(f"\n$ {next_cmd_str.strip()}\n")
-                        st.rerun()
-                    except Exception as e:
-                        st.session_state["running_process"] = None
-                        st.session_state["process_queue"] = None
-                        st.session_state["pending_commands"] = []
-                        st.session_state["last_exit_code"] = -1
-                        st.session_state["console_logs"].append(f"\nFailed to auto-start next command {next_cmd_str}: {e}\n")
-                        st.rerun()
-                else:
-                    stop_tunnel()
-                    st.session_state["running_process"] = None
-                    st.session_state["process_queue"] = None
-                    st.session_state["pending_commands"] = []
-                    st.session_state["last_exit_code"] = exit_code
-                    st.rerun()
-
-    # Generated Output Files & Visualizations Section
-    generated_files = []
-    if os.path.exists(cloned_dir):
-        for root, dirs, filenames in os.walk(cloned_dir):
-            if any(ignored in root for ignored in [".git", "__pycache__", "notebooks"]):
-                continue
-            for f in filenames:
-                rel_path = os.path.relpath(os.path.join(root, f), cloned_dir)
-                generated_files.append(rel_path)
-                    
-    if generated_files:
-        st.markdown("---")
-        st.markdown("#### 📂 Generated Output Files & Visualizations")
-        st.write("View or download datasets, logs, configs, and plots generated by running the project code.")
-        
-        selected_gen_file = st.selectbox("Select Output File to View", sorted(generated_files))
-        if selected_gen_file:
-            full_path = os.path.join(cloned_dir, selected_gen_file)
-            ext = selected_gen_file.split(".")[-1].lower() if "." in selected_gen_file else ""
-            
-            text_extensions = ["txt", "log", "py", "js", "md", "xml", "yaml", "yml", "sh", "bat", "sql", "css", "ini", "cfg"]
-            image_extensions = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"]
-            
-            if ext == "csv":
-                try:
-                    df_gen = pd.read_csv(full_path, nrows=100)
-                    st.dataframe(df_gen, use_container_width=True)
-                    st.caption(f"Previewing first 100 rows of `{selected_gen_file}`.")
-                except Exception as e:
-                    st.error(f"Failed to read CSV: {e}")
-            elif ext == "tsv":
-                try:
-                    df_gen = pd.read_csv(full_path, sep="\t", nrows=100)
-                    st.dataframe(df_gen, use_container_width=True)
-                    st.caption(f"Previewing first 100 rows of `{selected_gen_file}`.")
-                except Exception as e:
-                    st.error(f"Failed to read TSV: {e}")
-            elif ext in image_extensions:
-                try:
-                    st.image(full_path, caption=selected_gen_file, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Failed to load image: {e}")
-            elif ext == "html":
-                try:
-                    with open(full_path, "r", encoding="utf-8", errors="ignore") as gf:
-                        st.components.v1.html(gf.read(), height=500, scrolling=True)
-                except Exception as e:
-                    st.error(f"Failed to load HTML preview: {e}")
-            elif ext == "json":
-                try:
-                    with open(full_path, "r", encoding="utf-8", errors="ignore") as gf:
-                        st.json(json.load(gf))
-                except Exception as e:
-                    try:
-                        with open(full_path, "r", encoding="utf-8", errors="ignore") as gf:
-                            st.text_area("JSON file content", value=gf.read(), height=300)
-                    except Exception as e2:
-                        st.error(f"Failed to read JSON: {e2}")
-            elif ext in text_extensions:
-                try:
-                    with open(full_path, "r", encoding="utf-8", errors="ignore") as gf:
-                        content = gf.read()
-                        lang = ext if ext in ["py", "js", "sql", "css", "yaml", "yml", "xml", "html", "md", "sh", "bat"] else "bash"
-                        st.code(content, language=lang)
-                except Exception as e:
-                    st.error(f"Failed to read text file: {e}")
-            else:
-                st.info(f"📁 **Preview not available for this file type (`.{ext if ext else 'unknown'}`)**")
-                    
-            try:
-                with open(full_path, "rb") as df_file:
-                    st.download_button(
-                        label=f"⬇️ Download {os.path.basename(selected_gen_file)}",
-                        data=df_file.read(),
-                        file_name=os.path.basename(selected_gen_file),
-                        mime="application/octet-stream"
-                    )
-            except Exception as e:
-                st.error(f"Failed to prepare download: {e}")
-
-def render():
-    inject_theme()
-    st.markdown("### Dashboard")
-    
-    # Auto-load state if DB already has files
-    ensure_readme_or_explanation()
-    
-    tab_ingest, tab_readme, tab_run, tab_files = st.tabs([
-        '📥  Repository Ingestion',
-        '📖  README & Explanation',
-        '⚡  Live Runner',
-        '🗄️  Indexed Files'
-    ])
-    
-    with tab_ingest:
-        render_ingestion_section()
-        
-    with tab_readme:
-        st.markdown("### 📖  Project Overview")
-        last_repo = st.session_state.get('last_repo_name')
-        if last_repo:
-            st.info(f"Showing analysis for: **{last_repo}**")
-            readme_content = st.session_state.get('last_repo_readme')
-            explanation_content = st.session_state.get('last_repo_explanation')
-            
-            if readme_content:
-                st.success("✓ README.md file detected in repository")
-                st.markdown("---")
-                st.markdown(readme_content)
-            elif explanation_content:
-                st.warning("⚠️ No README.md file found. AI-Generated Project Explanation:")
-                st.markdown("---")
-                st.markdown(explanation_content)
         else:
-            st.info("No repository has been analyzed yet. Ingest a repository to view its overview.")
-            
-    with tab_run:
-        render_live_runner()
-        
-    with tab_files:
-        render_files_table()
+            st.error("Type DELETE in the box to confirm.")

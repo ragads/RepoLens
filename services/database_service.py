@@ -57,6 +57,18 @@ def delete_file(file_id: int):
 def wipe_all():
     sqlite_service.wipe_all()
 
+# ── AUDITS ──────────────────────────────────────────────────────────
+def save_audit(repo_name: str, summary: str, findings: str, score: int,
+               grade: str, files_scanned: int, files_skipped: str):
+    return sqlite_service.save_audit(repo_name, summary, findings, score,
+                                     grade, files_scanned, files_skipped)
+
+def get_latest_audit():
+    return sqlite_service.get_latest_audit()
+
+def get_audit_history(limit: int = 10) -> List[Dict[str, Any]]:
+    return sqlite_service.get_audit_history(limit)
+
 # ── QUERIES ─────────────────────────────────────────────────────────
 def get_query_history(limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
     return sqlite_service.get_query_history(limit, offset)
