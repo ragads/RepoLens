@@ -512,7 +512,7 @@ def detect_run_command(cloned_dir: str) -> dict:
 
 def start_tunnel(port):
     stop_tunnel()
-    cmd = f"npx localtunnel --port {port}"
+    cmd = f"npx.cmd localtunnel --port {port}" if os.name == 'nt' else f"npx localtunnel --port {port}"
     try:
         process = subprocess.Popen(
             cmd,

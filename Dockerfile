@@ -10,11 +10,13 @@ ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 # Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies and Node.js
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     software-properties-common \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the working directory
