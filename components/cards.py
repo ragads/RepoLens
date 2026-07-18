@@ -46,9 +46,9 @@ def severity_badge(level):
     )
 
 
-def section_header(title, subtitle=None):
+def section_header(title, subtitle=None, level=1):
     """Page title plus an optional muted subtitle."""
-    st.markdown(f"# {title}")
+    st.markdown(f"{'#' * level} {title}")
     if subtitle:
         st.markdown(f'<div class="dp-subtitle">{subtitle}</div>', unsafe_allow_html=True)
     st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)

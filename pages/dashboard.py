@@ -1,12 +1,7 @@
 # pages/dashboard.py
 """UI sections for DevPulse Architect.
 
-Backend logic (GitHub ingestion, LLM explanation) lives here alongside the render
-functions; anything reusable outside Streamlit belongs in services/.
-
-Sections exported to the router in app.py:
-    render_overview, render_ingestion_section, render_project_overview,
-    render_static_preview, render_files_table, render_settings
+Contains GitHub ingestion, repository overview, and AI Codebase Chat.
 """
 import base64
 import io
@@ -22,9 +17,9 @@ import streamlit as st
 
 from components.cards import empty_state, file_type_chip, metric_card, section_header
 from services import llm_service
+from services import chat_service
 from services.database_service import (
     LANGUAGE_MAPPING,
-    delete_file,
     get_all_files,
     get_chunk_count,
     get_file_content,
@@ -32,14 +27,13 @@ from services.database_service import (
     get_language_breakdown,
     get_storage_label,
     insert_file_with_chunks,
-    wipe_all,
 )
 
 logger = logging.getLogger("pages_dashboard")
 
 
 # ══════════════════════════════════════════════════════════════════════
-# GitHub ingestion
+# GitHub Ingestion
 # ══════════════════════════════════════════════════════════════════════
 def parse_github_url(repo_url: str):
     url = (repo_url or "").strip()
@@ -77,7 +71,6 @@ def check_repo_private(repo_url: str) -> bool:
             return bool(_json.loads(response.read().decode()).get("private", False))
     except urllib.error.HTTPError as e:
         if e.code == 403:
-            # Rate limited -> assume public and let the ZIP download decide.
             if e.headers.get("X-RateLimit-Remaining") == "0":
                 return False
             try:
@@ -207,7 +200,6 @@ def clone_and_index(repo_url: str, branch: str):
 # LLM-backed project explanation
 # ══════════════════════════════════════════════════════════════════════
 def call_gemini(prompt: str, system_instruction: str = "") -> str:
-    """Backwards-compatible name; routes through the active provider."""
     return llm_service.generate(system_instruction, prompt)
 
 
@@ -254,7 +246,6 @@ Key file contents:
 
 
 def ensure_readme_or_explanation():
-    """Populate README/explanation state from the DB if a repo is already indexed."""
     if st.session_state.get("last_repo_readme") or st.session_state.get(
         "last_repo_explanation"
     ):
@@ -291,92 +282,10 @@ def ensure_readme_or_explanation():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Static frontend preview — asset inlining
-# ══════════════════════════════════════════════════════════════════════
-def _load_ingested_assets() -> dict:
-    """Map of repo-relative path -> text content, read from SQLite."""
-    return {
-        f["filename"]: (get_file_content(f["id"]).get("content") or "")
-        for f in get_all_files()
-    }
-
-
-def _is_external(url: str) -> bool:
-    return url.startswith(("http://", "https://", "//", "data:", "#"))
-
-
-def _attr(tag: str, name: str):
-    m = re.search(rf'{name}\s*=\s*["\']([^"\']+)["\']', tag, re.I)
-    return m.group(1) if m else None
-
-
-def _resolve(base_dir: str, ref: str) -> str:
-    ref = ref.split("?")[0].split("#")[0]
-    joined = posixpath.normpath(posixpath.join(base_dir, ref))
-    return joined.lstrip("./")
-
-
-def inline_html(html_path: str, assets: dict):
-    """Return (self_contained_html, skipped_refs).
-
-    st.components.v1.html renders into a srcdoc iframe with no base URL, so every
-    relative reference must be inlined or it silently 404s.
-    """
-    base_dir = posixpath.dirname(html_path)
-    html = assets.get(html_path, "")
-    skipped = []
-
-    def repl_link(m):
-        tag = m.group(0)
-        if "stylesheet" not in tag.lower():
-            return tag
-        href = _attr(tag, "href")
-        if not href or _is_external(href):
-            return tag
-        key = _resolve(base_dir, href)
-        if key in assets:
-            return f"<style>\n{assets[key]}\n</style>"
-        skipped.append(href)
-        return tag
-
-    html = re.sub(r"<link\b[^>]*>", repl_link, html, flags=re.I)
-
-    def repl_script(m):
-        tag = m.group(0)
-        src = _attr(tag, "src")
-        if not src or _is_external(src):
-            return tag
-        key = _resolve(base_dir, src)
-        if key in assets:
-            # Guard against a literal </script> inside the JS closing the tag early.
-            js = assets[key].replace("</script>", "<\\/script>")
-            return f"<script>\n{js}\n</script>"
-        skipped.append(src)
-        return tag
-
-    html = re.sub(r"<script\b[^>]*\bsrc\s*=[^>]*>\s*</script>", repl_script, html, flags=re.I)
-
-    # Images are excluded by the ingestion whitelist, so these almost always miss.
-    for m in re.finditer(r'<img\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']', html, re.I):
-        src = m.group(1)
-        if not _is_external(src) and _resolve(base_dir, src) not in assets:
-            skipped.append(src)
-
-    return html, sorted(set(skipped))
-
-
-def _looks_like_spa(html: str, assets: dict) -> bool:
-    has_root = re.search(r'<div\s+id\s*=\s*["\'](root|app)["\']', html, re.I)
-    bundles = re.findall(r'src\s*=\s*["\']([^"\']*(?:main|index)\.[a-f0-9]{6,}\.js)["\']', html, re.I)
-    missing_bundle = any(b.lstrip("/") not in assets for b in bundles)
-    return bool(has_root) and (missing_bundle or not bundles)
-
-
-# ══════════════════════════════════════════════════════════════════════
-# Sections
+# Dashboard Sections
 # ══════════════════════════════════════════════════════════════════════
 def render_overview():
-    section_header("Overview", "Workspace status and indexed content at a glance.")
+    section_header("Overview", "Workspace status and indexed content at a glance.", level=2)
 
     files = get_all_files()
     if not files:
@@ -433,13 +342,13 @@ SAMPLE_REPOS = [
     ("Damn Vulnerable Web App", "https://github.com/anxolerd/dvpwa", "master",
      "Python · planted bugs"),
     ("Spoon-Knife", "https://github.com/octocat/Spoon-Knife", "main",
-     "HTML · try Preview"),
+     "HTML & CSS"),
 ]
 
 
 def render_ingestion_section():
     section_header("Ingest Repository",
-                   "Download a public GitHub repository and index it for analysis.")
+                   "Download a public GitHub repository and index it for analysis.", level=2)
 
     st.session_state.setdefault("ingest_url", "")
     st.session_state.setdefault("ingest_branch", "main")
@@ -481,7 +390,7 @@ def render_ingestion_section():
 
 
 def render_project_overview():
-    section_header("Project Overview", "README, or an AI-generated explanation if none exists.")
+    section_header("Project Overview", "README, or an AI-generated explanation if none exists.", level=2)
 
     ensure_readme_or_explanation()
     repo = st.session_state.get("last_repo_name")
@@ -506,187 +415,26 @@ def render_project_overview():
         empty_state("◇", "Nothing to show", "No README or explanation available.")
 
 
-def render_static_preview():
-    section_header("Static Preview",
-                   "Render a repository's frontend (HTML/CSS/JS). No backend is executed.")
+# ══════════════════════════════════════════════════════════════════════
+# Main Entry Point
+# ══════════════════════════════════════════════════════════════════════
+def render_unified_dashboard():
+    section_header("DevPulse Architect", "Codebase Ingestion & AI Chat Assistant", level=1)
 
-    assets = _load_ingested_assets()
-    htmls = sorted(p for p in assets if p.lower().endswith(".html"))
+    # 1. Ingestion & Overview side-by-side
+    col_left, col_right = st.columns([1.1, 0.9])
+    with col_left:
+        render_ingestion_section()
+    with col_right:
+        render_overview()
 
-    if not assets:
-        empty_state("▣", "Nothing indexed yet", "Ingest a repository first.")
-        return
-
-    if not htmls:
-        st.info(
-            "**No static frontend detected.** This looks like a backend or library "
-            "project — there is no HTML file to render. Try the Project Overview or "
-            "Security Audit sections instead."
-        )
-        return
-
-    # Prefer a built bundle, then a root index.html, then anything.
-    def _rank(p):
-        low = p.lower()
-        return (
-            0 if low in ("dist/index.html", "build/index.html") else
-            1 if low == "index.html" else
-            2 if low.endswith("/index.html") else 3
-        )
-
-    htmls.sort(key=_rank)
-    choice = st.selectbox("HTML file to preview", htmls)
-
-    assembled, skipped = inline_html(choice, assets)
-
-    if _looks_like_spa(assembled, assets):
-        st.warning(
-            "This looks like a React/Vue single-page app that needs a build step. "
-            "The preview cannot run a build. If the repo ships a built `dist/` or "
-            "`build/index.html`, select that file above instead."
-        )
-
-    if skipped:
-        with st.expander(f"{len(skipped)} referenced asset(s) not available"):
-            st.caption(
-                "These were excluded by the ingestion filter (images, binaries, or "
-                "files over 300 KB). External CDN links still load normally."
-            )
-            for ref in skipped:
-                st.markdown(f"- `{ref}`")
-
-    height = st.slider("Preview height", 300, 1200, 700, 50)
-    st.components.v1.html(assembled, height=height, scrolling=True)
-
-    col_a, col_b = st.columns([1, 1])
-    with col_a:
-        st.download_button(
-            "Download self-contained HTML",
-            assembled,
-            file_name="preview.html",
-            mime="text/html",
-            use_container_width=True,
-        )
-    with col_b:
-        b64 = base64.b64encode(assembled.encode("utf-8")).decode("ascii")
-        st.markdown(
-            f'<a href="data:text/html;base64,{b64}" target="_blank" '
-            f'style="display:block;text-align:center;padding:8px 16px;'
-            f"border:1px solid var(--border);border-radius:var(--radius-md);"
-            f'text-decoration:none;font-size:0.9rem;">Open in new tab</a>',
-            unsafe_allow_html=True,
-        )
-
-    if st.toggle("Show assembled source"):
-        st.code(assembled, language="html")
-
-
-def render_files_table():
-    section_header("Indexed Files", "Everything currently stored in the local index.")
+    st.markdown("---")
 
     files = get_all_files()
-    if not files:
-        empty_state("☰", "No files indexed", "Ingest a repository to populate the index.")
-        return
-
-    search = st.text_input("Filter", placeholder="Filter by filename…",
-                           label_visibility="collapsed")
-    if search:
-        files = [f for f in files if search.lower() in f["filename"].lower()]
-    if not files:
-        st.caption("No files match that filter.")
-        return
-
-    st.markdown(
-        '<div class="dp-th">'
-        '<div style="flex:3.5">Filename</div><div style="flex:1.5">Type</div>'
-        '<div style="flex:1">Language</div><div style="flex:1">Size</div>'
-        '<div style="flex:0.7;text-align:center">Del</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    for f in files:
-        c1, c2, c3, c4, c5 = st.columns([3.5, 1.5, 1, 1, 0.7])
-        c1.markdown(
-            f'<div style="color:var(--text-primary);font-size:0.875rem;padding-top:6px">'
-            f'{f["filename"]}</div>',
-            unsafe_allow_html=True,
-        )
-        c2.markdown(
-            f'<div style="padding-top:6px">{file_type_chip(f["file_type"])}</div>',
-            unsafe_allow_html=True,
-        )
-        c3.caption(f["language"] or "—")
-        size = f.get("size_bytes") or 0
-        c4.caption(f"{size // 1024} KB" if size >= 1024 else f"{size} B")
-        if c5.button("✕", key=f"del_{f['id']}", use_container_width=True):
-            delete_file(f["id"])
-            for k in ("last_repo_readme", "last_repo_explanation", "last_repo_name"):
-                st.session_state.pop(k, None)
-            st.rerun()
-
-
-def render_settings():
-    section_header("Settings", "AI configuration is read from the environment. Tune the UI here.")
-
-    provider = llm_service.active_provider()
-    meta = llm_service.PROVIDERS[provider]
-    key, source = llm_service.resolve_key(provider)
-
-    # ── AI configuration (read-only; set via env / .env) ──────────────
-    st.markdown('<div class="dp-overline">AI configuration</div>', unsafe_allow_html=True)
-    if source == "env":
-        st.success(
-            f"**{meta['label']}** · `{llm_service.active_model(provider)}` · "
-            f"key {llm_service.mask_key(key)} (from environment)"
-        )
+    if files:
+        # 2. Repo Overview (README / AI Explanation)
+        with st.expander("◇  Repository Overview & Architecture", expanded=True):
+            render_project_overview()
     else:
-        st.warning(
-            f"**{meta['label']}** · `{llm_service.active_model(provider)}` · "
-            f"**no API key found.** Set `{meta['env']}` in your environment (`.env` "
-            f"locally, or your host's env vars) to enable AI features."
-        )
-    emb = "enabled" if llm_service.embeddings_available() else "disabled (keyword-only search)"
-    st.caption(
-        f"Semantic search embeddings: **{emb}** — uses Google `text-embedding-004`, "
-        f"which needs `GEMINI_API_KEY` regardless of the chat provider."
-    )
-    st.caption(
-        "Provider, model, and keys are configured with the `LLM_PROVIDER`, `LLM_MODEL`, "
-        "and `<PROVIDER>_API_KEY` environment variables — not in the UI."
-    )
+        empty_state("💬", "Workspace is empty", "Ingest a repository above to enable codebase overview and AI chat.")
 
-    st.markdown("---")
-
-    # ── Appearance ────────────────────────────────────────────────────
-    st.markdown('<div class="dp-overline">Appearance</div>', unsafe_allow_html=True)
-    _theme_opts = ["auto", "light", "dark"]
-
-    def _persist_theme():
-        st.session_state["ui_theme"] = st.session_state["_ui_theme_w"]
-
-    st.selectbox(
-        "Theme",
-        _theme_opts,
-        index=_theme_opts.index(st.session_state.get("ui_theme", "auto")),
-        key="_ui_theme_w",
-        on_change=_persist_theme,
-        help="'auto' follows your operating system setting.",
-    )
-
-    st.markdown("---")
-
-    # ── Danger zone ───────────────────────────────────────────────────
-    st.markdown('<div class="dp-overline">Danger zone</div>', unsafe_allow_html=True)
-    st.caption("Deletes every indexed file, chunk embedding, query log, and audit report.")
-    confirm = st.text_input("Type DELETE to confirm")
-    if st.button("Wipe all data"):
-        if confirm == "DELETE":
-            wipe_all()
-            for k in ("last_repo_readme", "last_repo_explanation", "last_repo_name",
-                      "last_audit"):
-                st.session_state.pop(k, None)
-            st.success("All data wiped.")
-            st.rerun()
-        else:
-            st.error("Type DELETE in the box to confirm.")

@@ -1,99 +1,67 @@
 # services/chat_service.py
-"""RAG chat grounded strictly in the ingested repository.
-
-Retrieval is vector-first (needs a Gemini embeddings key) and falls back to
-keyword matching so the chat still works with no key. Generation goes through
-llm_service.generate(), so it uses whichever provider/model/key is set in Settings.
-
-No Streamlit imports — reusable and testable on its own.
-"""
 import logging
-
-from services import llm_service
-from services.database_service import (
-    get_all_files,
-    keyword_search_chunks,
-    search_chunks_vector,
-)
+from typing import List, Dict, Any
+import services.database_service as database_service
+import services.sqlite_service as sqlite_service
+import services.llm_service as llm_service
 
 logger = logging.getLogger("chat_service")
 
-MAX_CONTEXT_CHUNKS = 6
-MAX_HISTORY_TURNS = 6          # user+assistant messages fed back for continuity
-MAX_CHUNK_CHARS = 1200
-FILE_TYPES = ["source_code", "api_doc", "design_doc"]
+SYSTEM_PROMPT = """You are DevPulse Architect AI Assistant, a powerful software architect assistant.
+You are helping the user understand and navigate their codebase.
+Analyze the provided code chunks retrieved from the database to answer the user's question.
+If the retrieved code chunks do not contain enough information to answer, state that clearly.
+Always be concise, precise, and professional. Use markdown code snippets for code blocks."""
 
-SYSTEM = """You are a coding assistant embedded in "DevPulse Architect", answering \
-questions about ONE specific codebase — the repository the user has ingested.
+def ask_question(question: str) -> str:
+    """Retrieves relevant code chunks and generates a response using the configured LLM."""
+    try:
+        # Retrieve context
+        if llm_service.embeddings_available():
+            chunks = database_service.search_chunks_vector(question, limit=6)
+        else:
+            chunks = sqlite_service.keyword_search_chunks(question, limit=6)
 
-Rules:
-- Answer ONLY from the provided context (retrieved code snippets and the file list).
-- If the answer is not in the context, say so plainly: "I don't see that in the \
-indexed codebase." Do not invent files, functions, or behavior.
-- Do not answer questions unrelated to this codebase; steer back to it.
-- Cite the files you used, e.g. `path/to/file.py`.
-- Be concise and concrete. Use markdown and fenced code blocks for code."""
+        if not chunks:
+            # Try to get overall file list to see if database has any files
+            files = database_service.get_all_files()
+            if not files:
+                return "The workspace is empty. Please ingest a GitHub repository first."
+            return "I couldn't find any relevant code segments in the index for your question. Try using different keywords."
 
+        # Format context
+        context_parts = []
+        retrieved_files = set()
+        for idx, chunk in enumerate(chunks):
+            filename = chunk.get("filename", "unknown")
+            content = chunk.get("content", "")
+            retrieved_files.add(filename)
+            context_parts.append(f"--- Chunk {idx+1} from {filename} ---\n{content}\n")
 
-class NoRepositoryIndexed(RuntimeError):
-    """Raised when there is nothing to chat about yet."""
+        context = "\n".join(context_parts)
 
+        prompt = f"""Use the following codebase chunks as context to answer the question:
 
-def retrieve(question: str, k: int = MAX_CONTEXT_CHUNKS) -> list:
-    """Vector search first; keyword fallback when embeddings are unavailable."""
-    hits = search_chunks_vector(question, limit=k, file_types=FILE_TYPES)
-    if hits:
-        return hits
-    return keyword_search_chunks(question, limit=k)
+{context}
 
+Question: {question}
+Answer:"""
 
-def _format_context(chunks: list, files: list) -> str:
-    catalog = ", ".join(sorted(f["filename"] for f in files)[:60])
-    parts = [f"Indexed files: {catalog}"]
-    if len(files) > 60:
-        parts[0] += f" (+{len(files) - 60} more)"
-    if chunks:
-        parts.append("\nRelevant snippets:")
-        for i, c in enumerate(chunks, 1):
-            body = (c.get("content") or "")[:MAX_CHUNK_CHARS]
-            parts.append(f"\n[{i}] {c.get('filename', '?')}\n{body}")
-    else:
-        parts.append("\n(No snippet matched the question directly — rely on the "
-                     "file list above and say if the detail isn't available.)")
-    return "\n".join(parts)
+        # Log query to database
+        answer = llm_service.generate(SYSTEM_PROMPT, prompt)
+        
+        try:
+            database_service.insert_query_log(
+                question=question,
+                plan="RAG retrieval",
+                retrieved_files=list(retrieved_files),
+                answer=answer
+            )
+        except Exception as log_ex:
+            logger.warning(f"Failed to insert query log: {log_ex}")
 
+        return answer
 
-def _format_history(history: list) -> str:
-    turns = [m for m in history if m.get("role") in ("user", "assistant")]
-    turns = turns[-MAX_HISTORY_TURNS:]
-    if not turns:
-        return ""
-    lines = ["Conversation so far:"]
-    for m in turns:
-        who = "User" if m["role"] == "user" else "Assistant"
-        lines.append(f"{who}: {m['content']}")
-    return "\n".join(lines) + "\n"
-
-
-def answer(history: list, question: str):
-    """Return (answer_text, sources) for one turn. Raises if nothing is indexed."""
-    files = get_all_files()
-    if not files:
-        raise NoRepositoryIndexed(
-            "No repository is indexed yet. Ingest one first, then ask about it."
-        )
-
-    chunks = retrieve(question)
-    context = _format_context(chunks, files)
-    history_block = _format_history(history)
-
-    prompt = (
-        f"{history_block}"
-        f"--- CODEBASE CONTEXT ---\n{context}\n\n"
-        f"--- QUESTION ---\n{question}"
-    )
-    text = llm_service.generate(SYSTEM, prompt)
-
-    # Distinct source filenames, preserving retrieval order.
-    sources = list(dict.fromkeys(c.get("filename") for c in chunks if c.get("filename")))
-    return text, sources
+    except Exception as e:
+        logger.error(f"Chat service error: {e}")
+        return f"An error occurred while generating the answer: {e}"

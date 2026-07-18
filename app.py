@@ -22,40 +22,23 @@ for _k in ("ui_theme", "ingest_url", "ingest_branch"):
     if _k in st.session_state:
         st.session_state[_k] = st.session_state[_k]
 
-from components.auth_gate import render_logout, require_login  # noqa: E402
+# Sanitize chat_history — remove any entries whose content/role is not a plain str.
+# This cleans up corrupted state from older versions that accidentally stored
+# Streamlit DeltaGenerator objects inside the history list.
+if "chat_history" in st.session_state:
+    st.session_state["chat_history"] = [
+        m for m in st.session_state["chat_history"]
+        if isinstance(m, dict)
+        and isinstance(m.get("role"), str)
+        and isinstance(m.get("content"), str)
+    ]
+
 from theme import inject_theme  # noqa: E402
 
 inject_theme(st.session_state.get("ui_theme", "auto"))
 
-# Gate the whole app behind login / self-registration; halts here until signed in.
-authenticator = require_login()
 
-
-# ── Router ──────────────────────────────────────────────────────────────
-# Order matters: the first entry is the landing section on a fresh session.
-SECTIONS = {
-    "Ingest Repository": ("pages.dashboard", "render_ingestion_section"),
-    "Overview": ("pages.dashboard", "render_overview"),
-    "Project Overview": ("pages.dashboard", "render_project_overview"),
-    "Security Audit": ("pages.security_audit", "render_security_audit"),
-    "Static Preview": ("pages.dashboard", "render_static_preview"),
-    "Indexed Files": ("pages.dashboard", "render_files_table"),
-    "Guide": ("pages.guide", "render_guide"),
-    "Settings": ("pages.dashboard", "render_settings"),
-}
-
-ICONS = {
-    "Ingest Repository": "↓",
-    "Overview": "◔",
-    "Project Overview": "◇",
-    "Security Audit": "⛨",
-    "Static Preview": "▣",
-    "Indexed Files": "☰",
-    "Guide": "?",
-    "Settings": "⚙",
-}
-
-
+# ── Unified Dashboard ──────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
         """
@@ -81,27 +64,13 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    choice = st.radio(
-        "Navigation",
-        list(SECTIONS.keys()),
-        format_func=lambda s: f"{ICONS[s]}   {s}",
-        label_visibility="collapsed",
-    )
-
-    with st.container(key="sidebar_foot"):
-        st.markdown("<hr style='margin:16px 0 12px'>", unsafe_allow_html=True)
-        render_logout(authenticator)
-
-
-_module_name, _fn_name = SECTIONS[choice]
 try:
-    _render = getattr(importlib.import_module(_module_name), _fn_name)
-    _render()
+    from pages.dashboard import render_unified_dashboard
+    render_unified_dashboard()
 except Exception as exc:  # noqa: BLE001 - top-level UI boundary
-    st.error(f"Failed to render **{choice}**: {exc}")
+    st.error(f"Failed to render dashboard: {exc}")
     st.exception(exc)
 
-# Floating chat launcher + panel, present on every page.
-from components.chat_widget import render_chat_widget  # noqa: E402
-
+from components.chat_widget import render_chat_widget
 render_chat_widget()
+
