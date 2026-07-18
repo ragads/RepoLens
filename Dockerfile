@@ -4,8 +4,9 @@ FROM python:3.11-slim
 # Set environmental variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV STREAMLIT_SERVER_PORT=8505
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
 # Set the working directory in the container
 WORKDIR /app
@@ -28,11 +29,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application files into the working directory
 COPY . .
 
-# Expose port 8505 for Streamlit
 EXPOSE 8505
 
-# Healthcheck to verify container health
-HEALTHCHECK CMD curl --fail http://localhost:8505/_stcore/health || exit 1
+# Healthcheck (uses $PORT when the host provides one, e.g. Render).
+HEALTHCHECK CMD curl --fail http://localhost:${PORT:-8505}/_stcore/health || exit 1
 
-# Run Streamlit when the container launches
-CMD ["streamlit", "run", "app.py"]
+# Bind to the host-provided $PORT (Render sets this dynamically); default 8505 locally.
+# Shell form so ${PORT} is expanded at runtime.
+CMD streamlit run app.py --server.port ${PORT:-8505} --server.address 0.0.0.0

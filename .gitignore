@@ -1,5 +1,6 @@
 .env
 assistant.db
+auth.db
 __pycache__/
 *.pyc
 .DS_Store

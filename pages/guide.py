@@ -175,6 +175,64 @@ def render_guide() -> None:
     st.markdown('<div class="dp-overline">How the audit works</div>', unsafe_allow_html=True)
     st.code(AUDIT_FLOW, language="text")
 
+    # ── Detailed scoring explainer ────────────────────────────────────
+    st.markdown('<div class="dp-overline">The two passes</div>', unsafe_allow_html=True)
+    st.markdown(
+        "- **Pass A — static heuristics.** 14 regex rules run over **every** indexed "
+        "source file. Free, no API key, no cap. Each rule is language-gated (a Python "
+        "rule won't fire on JavaScript) to cut false positives.\n"
+        "- **Pass B — LLM deep read.** With a key configured, up to **40** files "
+        "(prioritized: files with heuristic hits first, then the riskiest by search, "
+        "then smallest) are sent to the model one at a time; files over **40 KB** are "
+        "truncated. Anything skipped is logged, never dropped silently.\n"
+        "- **Merge.** Findings from both passes are de-duplicated on `(file, line, CWE)`; "
+        "the heuristic line number wins, the LLM's description and fix are kept."
+    )
+
+    st.markdown('<div class="dp-overline">The 14 rules</div>', unsafe_allow_html=True)
+    st.markdown(
+        "| Rule | Severity | CWE |\n"
+        "|---|---|---|\n"
+        "| AWS access key committed in source | Critical | CWE-798 |\n"
+        "| Private key material committed | Critical | CWE-798 |\n"
+        "| Hardcoded credential or API key | High | CWE-798 |\n"
+        "| Dynamic code execution (`eval`/`exec`) | High | CWE-95 |\n"
+        "| Shell exec via `os.system` | High | CWE-78 |\n"
+        "| `subprocess(..., shell=True)` | High | CWE-78 |\n"
+        "| `child_process.exec` | High | CWE-78 |\n"
+        "| SQL built by string interpolation | High | CWE-89 |\n"
+        "| Insecure deserialization (`pickle`/`yaml`) | High | CWE-502 |\n"
+        "| Weak hash (MD5 / SHA-1) | Medium | CWE-327 |\n"
+        "| TLS verification disabled | Medium | CWE-295 |\n"
+        "| Debug mode enabled | Medium | CWE-489 |\n"
+        "| Unsanitized DOM sink (XSS) | Medium | CWE-79 |\n"
+        "| Permissive CORS wildcard | Low | CWE-942 |\n"
+    )
+
+    st.markdown('<div class="dp-overline">How the score is calculated</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        "Every file starts the project at **100**. Each finding subtracts points by "
+        "severity — `info` findings never lower the score:"
+    )
+    st.code(
+        "score = max(0, 100 - (critical x 20 + high x 10 + medium x 4 + low x 1))\n\n"
+        "  A  >= 90      B  >= 80      C  >= 70      D  >= 60      F  < 60",
+        language="text",
+    )
+    st.markdown(
+        "**Worked examples**\n"
+        "- 1 critical + 2 high + 1 medium → `100 - (20 + 20 + 4)` = **56 → grade F**\n"
+        "- The bundled demo (`auth_manager.py`): 3 high + 2 medium → `100 - (30 + 8)` "
+        "= **62 → grade D**\n"
+        "- A clean file with no findings → **100 → grade A**"
+    )
+    st.caption(
+        "The score reflects severity and count, not exploitability — treat it as a "
+        "prioritization signal, not a verdict. A repo with one hardcoded AWS key scores "
+        "far worse than one with several low-severity CORS notes, by design."
+    )
+
     st.markdown('<div class="dp-overline">Reading a finding</div>', unsafe_allow_html=True)
     st.caption(
         "Expand any row for the location, the offending snippet, and a concrete fix. "
@@ -213,43 +271,6 @@ def render_guide() -> None:
     _shot("07_files")
     st.markdown("---")
 
-    _step(7, "Settings — pick a model, paste a key",
-          "Choose a provider, choose a model, paste that provider's key, then press "
-          "<b>Test connection</b>. Also holds the theme switch and the wipe-database "
-          "danger zone.")
-    _shot("08_settings")
-
-    st.markdown('<div class="dp-overline">Providers and models</div>', unsafe_allow_html=True)
-    st.markdown(
-        "| Provider | Models | Env var fallback |\n"
-        "|---|---|---|\n"
-        "| Google Gemini | `gemini-2.5-flash` (default), `gemini-2.5-pro` | `GEMINI_API_KEY` |\n"
-        "| Anthropic (Claude) | `claude-opus-4-8` (default), `claude-sonnet-5`, "
-        "`claude-haiku-4-5` | `ANTHROPIC_API_KEY` |\n"
-        "| OpenAI (GPT) | `gpt-4o` (default), `gpt-4o-mini` | `OPENAI_API_KEY` |\n"
-    )
-    st.caption(
-        "Keys live in memory for this browser session only and are never written to disk. "
-        "Leave the field empty and the app falls back to the environment variable — that's "
-        "how you configure it on a host like Render."
-    )
-
-    with st.expander("Why semantic search asks for a Gemini key separately"):
-        st.markdown(
-            "Vector search is powered by Google's `text-embedding-004`, so it needs a "
-            "**Gemini** key regardless of which provider you picked for chat. This is the "
-            "one place the two are coupled.\n\n"
-            "- **With a Gemini key** — chunks are embedded, and vector search focuses the "
-            "audit's AI pass on the riskiest code.\n"
-            "- **Without one** — chunks store `NULL` embeddings and search degrades to "
-            "keyword matching. Nothing breaks; the audit still runs and still prioritizes "
-            "by heuristic hits.\n\n"
-            "When your chat provider isn't Gemini, Settings shows an optional second field "
-            "just for the embeddings key."
-        )
-
-    st.markdown("---")
-
     # ── Troubleshooting ──────────────────────────────────────────────
     st.markdown('<div class="dp-overline">When something looks wrong</div>',
                 unsafe_allow_html=True)
@@ -262,12 +283,11 @@ def render_guide() -> None:
         "Restart it and use the port printed in the terminal. |\n"
         "| **Audit finds nothing** | Often correct. A static HTML demo genuinely has no "
         "Python injection flaws. Try a repo with server-side code. |\n"
-        "| **“Only the free static rules will run”** | No API key resolved. Set one in "
-        "Settings, or export the provider's env var. |\n"
+        "| **AI features say “not configured”** | No API key found. Set the provider key "
+        "as an environment variable (`.env` locally, or your host's env vars). |\n"
         "| **“This repository is private”** | Correct — only public repos can be fetched. |\n"
         "| **PDF button disabled** | `fpdf2` isn't installed. Re-run "
         "`pip install -r requirements.txt`. |\n"
-        "| **Keys gone after restart** | By design — in-memory only. Use env vars to persist. |\n"
     )
 
     st.markdown("---")

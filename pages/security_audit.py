@@ -33,9 +33,42 @@ def _run_audit(repo_name: str, use_llm: bool):
     return audit
 
 
+def _render_score_help():
+    st.markdown(
+        "Every project starts at **100 points**. Each finding subtracts points by "
+        "severity — `info` findings never lower the score."
+    )
+    st.code(
+        "score = max(0, 100 - (critical x 20 + high x 10 + medium x 4 + low x 1))\n\n"
+        "  A >= 90     B >= 80     C >= 70     D >= 60     F < 60",
+        language="text",
+    )
+    st.markdown(
+        "**Two passes feed the count:** free static rules over every file, then an "
+        "optional AI deep-read; findings merge and de-duplicate on `(file, line, CWE)`."
+    )
+    st.markdown(
+        "**Examples**\n"
+        "- 3 high + 2 medium → `100 - (30 + 8)` = **62 → D**\n"
+        "- 1 critical + 1 high → `100 - (20 + 10)` = **70 → C**\n"
+        "- no findings → **100 → A**"
+    )
+    st.caption(
+        "The score reflects severity and count, not exploitability — use it to "
+        "prioritize, not as a verdict. Both passes can produce false positives."
+    )
+
+
 def _render_summary(audit):
     summary = audit["summary"]
     counts = summary["counts"]
+
+    head = st.columns([3, 1.4])
+    with head[0]:
+        st.markdown('<div class="dp-overline">Result</div>', unsafe_allow_html=True)
+    with head[1]:
+        with st.popover("ⓘ  How the score works", use_container_width=True):
+            _render_score_help()
 
     cols = st.columns(6)
     icons = {"critical": "▲", "high": "▲", "medium": "●", "low": "●", "info": "○"}
@@ -51,8 +84,8 @@ def _render_summary(audit):
 
     if not audit.get("llm_used"):
         st.info(
-            "**Static heuristics only.** AI deep analysis was skipped because no API "
-            "key is configured. Add one in Settings for a much richer report."
+            "**Static heuristics only.** AI deep analysis was skipped because no API key "
+            "is configured. Set a provider key in your environment for a richer report."
         )
 
 
@@ -165,7 +198,7 @@ def render_security_audit():
     if not has_key:
         st.info(
             "No API key configured, so only the free static rules will run. "
-            "Add a key in Settings to enable AI deep analysis."
+            "Set a provider key in your environment to enable AI deep analysis."
         )
 
     c1, c2 = st.columns([1, 3])

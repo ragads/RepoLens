@@ -5,11 +5,16 @@ import streamlit as st
 
 def metric_card(icon, label, value, tone="accent", delta=None):
     """A KPI tile. `tone` is a token name: accent|critical|high|medium|low|info|success."""
-    delta_html = ""
+    # Always reserve the delta line so cards in a row stay equal height even when
+    # only some (e.g. the Score tile) actually have a delta.
     if delta:
         delta_html = (
             f'<div style="color:var(--{tone});font-size:0.8125rem;'
             f'margin-top:2px;">{delta}</div>'
+        )
+    else:
+        delta_html = (
+            '<div style="font-size:0.8125rem;margin-top:2px;visibility:hidden;">.</div>'
         )
     st.markdown(
         f"""

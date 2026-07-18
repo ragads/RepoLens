@@ -1,20 +1,18 @@
 # services/llm_service.py
 """Provider-agnostic LLM access.
 
-Pure Python: no Streamlit imports outside the thin session-state accessors, so the
-adapters remain reusable if the UI is ever replaced.
+Pure Python, no Streamlit. Everything is driven by environment variables so the
+deployer configures one provider + model + key and users never touch keys:
 
-Key resolution order per provider: session state (set in Settings) -> env var.
-`app.py` exports session keys into os.environ on every rerun, so any consumer that
-calls os.getenv() at call time (e.g. embedding_service) also picks them up.
+    LLM_PROVIDER   gemini | openai | anthropic   (default: gemini)
+    LLM_MODEL      a model id for that provider   (default: the provider's first)
+    <PROVIDER>_API_KEY   the key, e.g. GEMINI_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY
 
 Each SDK is imported lazily inside its adapter, so a provider whose package is not
 installed only fails when that provider is actually selected.
 """
 import os
 import logging
-
-import streamlit as st
 
 logger = logging.getLogger("llm_service")
 
@@ -111,25 +109,21 @@ DEFAULT_PROVIDER = "gemini"
 EMBEDDING_PROVIDER = "gemini"
 
 
-# ── Session accessors ───────────────────────────────────────────────────
+# ── Config accessors (environment-driven) ───────────────────────────────
 def active_provider() -> str:
-    prov = st.session_state.get("llm_provider", DEFAULT_PROVIDER)
+    prov = os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
     return prov if prov in PROVIDERS else DEFAULT_PROVIDER
 
 
 def active_model(provider: str = None) -> str:
     provider = provider or active_provider()
-    models = PROVIDERS[provider]["models"]
-    chosen = st.session_state.get("llm_model")
-    return chosen if chosen in models else models[0]
+    # Honour any explicit LLM_MODEL (even a custom id); else the provider default.
+    return os.getenv("LLM_MODEL", "").strip() or PROVIDERS[provider]["models"][0]
 
 
 def resolve_key(provider: str = None):
-    """Return (key, source) where source is 'session', 'env', or 'none'."""
+    """Return (key, source) where source is 'env' or 'none'."""
     provider = provider or active_provider()
-    session_key = st.session_state.get(f"api_key_{provider}")
-    if session_key:
-        return session_key, "session"
     env_key = os.getenv(PROVIDERS[provider]["env"])
     if env_key:
         return env_key, "env"
@@ -140,18 +134,6 @@ def mask_key(key: str) -> str:
     if not key:
         return "not set"
     return "•" * 8 + key[-4:] if len(key) > 4 else "•" * 8
-
-
-def export_keys_to_env() -> None:
-    """Push session-state keys into os.environ so os.getenv() consumers see them.
-
-    Called once per rerun from app.py. A provider with no session key is left
-    alone, preserving any value already set in the environment (e.g. on Render).
-    """
-    for provider, meta in PROVIDERS.items():
-        session_key = st.session_state.get(f"api_key_{provider}")
-        if session_key:
-            os.environ[meta["env"]] = session_key
 
 
 # ── Public API ──────────────────────────────────────────────────────────

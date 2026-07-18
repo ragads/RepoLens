@@ -238,7 +238,7 @@ section[data-testid="stSidebar"][aria-expanded="false"] {
 section[data-testid="stSidebar"][aria-expanded="false"] .dp-logo-text,
 section[data-testid="stSidebar"][aria-expanded="false"] div[role="radiogroup"],
 section[data-testid="stSidebar"][aria-expanded="false"] hr,
-section[data-testid="stSidebar"][aria-expanded="false"] .dp-sidebar-foot,
+section[data-testid="stSidebar"][aria-expanded="false"] .st-key-sidebar_foot,
 section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"] {
     display: none !important;
 }
@@ -334,21 +334,42 @@ button[data-testid="stBaseButton-secondary"]:hover {
 }
 button:focus-visible { outline: 3px solid var(--focus-ring) !important; outline-offset: 1px; }
 
+/* Form submit buttons (Streamlit's default is a WHITE box in every theme — used
+   here for the Login / Register CTAs). Make them solid accent so the label reads. */
+button[data-testid="stBaseButton-primaryFormSubmit"],
+button[data-testid="stBaseButton-secondaryFormSubmit"] {
+    background: var(--accent) !important;
+    border: 1px solid var(--accent) !important;
+    border-radius: var(--radius-md) !important;
+    box-shadow: var(--shadow-xs) !important;
+    padding: 8px 20px !important;
+}
+button[data-testid="stBaseButton-primaryFormSubmit"]:hover,
+button[data-testid="stBaseButton-secondaryFormSubmit"]:hover {
+    background: var(--accent-hover) !important; border-color: var(--accent-hover) !important;
+}
+
 /* Streamlit wraps button labels in <p>, which would otherwise inherit the
    global paragraph color and wash out the label. */
 button[data-testid="stBaseButton-primary"] p,
 button[data-testid="stBaseButton-primary"] span,
-button[data-testid="stBaseButton-primaryFormSubmit"] p {
+button[data-testid="stBaseButton-primaryFormSubmit"] p,
+button[data-testid="stBaseButton-primaryFormSubmit"] span,
+button[data-testid="stBaseButton-secondaryFormSubmit"] p,
+button[data-testid="stBaseButton-secondaryFormSubmit"] span {
     color: #FFFFFF !important; font-weight: 600 !important;
 }
 button[data-testid="stBaseButton-secondary"] p,
 button[data-testid="stBaseButton-secondary"] span,
-button[data-testid="stBaseButton-secondaryFormSubmit"] p,
 button[data-testid="stBaseButton-minimal"] p {
     color: var(--text-primary) !important;
 }
 button[disabled] p, button[disabled] span { color: var(--text-muted) !important; }
 div[data-testid="stDownloadButton"] button p { color: var(--text-primary) !important; }
+
+/* Tabs shouldn't get the boxy focus outline — the underline already marks active. */
+button[role="tab"]:focus-visible { outline: none !important; }
+button[role="tab"] { border-radius: var(--radius-sm) var(--radius-sm) 0 0 !important; }
 
 /* ── Inputs ───────────────────────────────────────────── */
 .stTextInput input, .stTextArea textarea, .stNumberInput input {
@@ -358,6 +379,25 @@ div[data-testid="stDownloadButton"] button p { color: var(--text-primary) !impor
     border-radius: var(--radius-md) !important;
     font-size: 0.9rem !important;
 }
+/* The input's root wrapper defaults to the light secondaryBackground; on password
+   fields it shows as a white box behind the reveal-eye. Match it to the surface. */
+[data-testid="stTextInputRootElement"] {
+    background: var(--surface) !important;
+    border-radius: var(--radius-md) !important;
+}
+/* Streamlit overlays a "Press Enter to submit form" hint on the last form input;
+   it overlaps the field content. Hide it. */
+[data-testid="InputInstructions"] { display: none !important; }
+/* Password show/hide eye + stepper buttons default to a white box in dark mode. */
+.stTextInput button, .stNumberInput button {
+    background: transparent !important;
+    border: none !important;
+    color: var(--text-muted) !important;
+}
+.stTextInput button:hover, .stNumberInput button:hover {
+    background: var(--surface-2) !important; color: var(--text-primary) !important;
+}
+.stTextInput button svg, .stNumberInput button svg { fill: var(--text-muted) !important; }
 .stTextInput input::placeholder, .stTextArea textarea::placeholder {
     color: var(--text-muted) !important;
 }
@@ -365,10 +405,12 @@ div[data-testid="stDownloadButton"] button p { color: var(--text-primary) !impor
     border-color: var(--accent) !important;
     box-shadow: 0 0 0 3px var(--focus-ring) !important;
 }
-/* Selectbox / multiselect. The visible control is div[role="group"]; without this
-   it keeps config.toml's light secondaryBackgroundColor even in dark mode. */
+/* Selectbox / multiselect. The visible control is div[role="group"] (selectbox) or
+   the baseweb select container (multiselect); without this they keep config.toml's
+   light secondaryBackgroundColor even in dark mode. */
 div[data-testid="stSelectbox"] div[role="group"],
-div[data-testid="stMultiSelect"] div[role="group"] {
+div[data-testid="stMultiSelect"] div[role="group"],
+div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div {
     background: var(--surface) !important;
     border: 1px solid var(--border) !important;
     border-radius: var(--radius-md) !important;
@@ -524,6 +566,39 @@ section[data-testid="stFileUploaderDropzone"] {
 table { border-color: var(--border) !important; }
 thead th { color: var(--text-muted) !important; border-color: var(--border) !important; }
 tbody td { color: var(--text-primary) !important; border-color: var(--border) !important; }
+
+/* ── Popover (e.g. audit score explainer) ─────────────── */
+[data-testid="stPopoverBody"],
+div:has(> [data-testid="stPopoverBody"]) {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-lg) !important;
+    box-shadow: var(--shadow-lg) !important;
+}
+button[data-testid="stPopoverButton"] {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+    color: var(--text-secondary) !important;
+}
+button[data-testid="stPopoverButton"]:hover {
+    background: var(--surface-2) !important; color: var(--text-primary) !important;
+}
+button[data-testid="stPopoverButton"] p { color: inherit !important; }
+
+/* ── Auth sign-in card ────────────────────────────────── */
+.st-key-auth_card {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 16px !important;
+    padding: 10px 24px 22px !important;
+    box-shadow: var(--shadow-md) !important;
+}
+/* streamlit-authenticator wraps fields in a bordered form; flatten it inside the
+   card so there's no box-in-a-box. */
+.st-key-auth_card div[data-testid="stForm"] {
+    border: none !important; padding: 0 !important; box-shadow: none !important;
+}
 
 /* ── Floating chat widget ─────────────────────────────── */
 /* Streamlit tags keyed containers with a .st-key-<key> class; we pin those. */

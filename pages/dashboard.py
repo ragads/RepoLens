@@ -400,8 +400,8 @@ def render_overview():
     if not llm_service.embeddings_available():
         st.info(
             "No Gemini key found, so chunks are stored without embeddings and search "
-            "falls back to keyword matching. Add a Gemini key in Settings to enable "
-            "semantic search. (Your chat provider is unaffected.)"
+            "falls back to keyword matching. Set `GEMINI_API_KEY` in your environment to "
+            "enable semantic search. (Your chat provider is unaffected.)"
         )
 
     left, right = st.columns([1, 1])
@@ -627,86 +627,50 @@ def render_files_table():
 
 
 def render_settings():
-    section_header("Settings", "Choose your model provider, paste a key, and tune the UI.")
+    section_header("Settings", "AI configuration is read from the environment. Tune the UI here.")
 
-    providers = list(llm_service.PROVIDERS)
-
-    st.markdown('<div class="dp-overline">Model provider</div>', unsafe_allow_html=True)
-    provider = st.selectbox(
-        "Provider",
-        providers,
-        format_func=lambda p: llm_service.PROVIDERS[p]["label"],
-        key="llm_provider",
-    )
+    provider = llm_service.active_provider()
     meta = llm_service.PROVIDERS[provider]
-
-    # Reset the model if it doesn't belong to the newly-selected provider.
-    if st.session_state.get("llm_model") not in meta["models"]:
-        st.session_state["llm_model"] = meta["models"][0]
-    st.selectbox("Model", meta["models"], key="llm_model")
-
-    entered = st.text_input(
-        f"{meta['label']} API key",
-        type="password",
-        value=st.session_state.get(f"api_key_{provider}", ""),
-        help=f"Get a key at {meta['keys_url']}",
-    )
-
-    c1, c2, _ = st.columns([1, 1, 2])
-    with c1:
-        if st.button("Save", type="primary", use_container_width=True):
-            st.session_state[f"api_key_{provider}"] = entered.strip()
-            st.success("Saved for this session.")
-            st.rerun()
-    with c2:
-        if st.button("Test connection", use_container_width=True):
-            key = entered.strip() or llm_service.resolve_key(provider)[0]
-            ok, msg = llm_service.test_connection(provider, key)
-            (st.success if ok else st.error)(msg)
-
     key, source = llm_service.resolve_key(provider)
-    source_label = {"session": "entered here", "env": "environment variable",
-                    "none": "not configured"}[source]
-    st.caption(
-        f"Active: **{meta['label']}** · `{llm_service.active_model(provider)}` · "
-        f"key {llm_service.mask_key(key)} ({source_label})"
-    )
-    st.caption(
-        "Keys are held in memory for this session only and are never written to disk. "
-        "Re-enter after a restart, or set the environment variable on your host."
-    )
 
-    st.markdown("---")
-
-    # ── Embeddings ────────────────────────────────────────────────────
-    st.markdown('<div class="dp-overline">Semantic search (optional)</div>',
-                unsafe_allow_html=True)
-    st.caption(
-        "Vector search uses Google's `text-embedding-004`, so it needs a Gemini key "
-        "regardless of the chat provider above. Without one, search falls back to "
-        "keyword matching — nothing breaks."
-    )
-    if provider != llm_service.EMBEDDING_PROVIDER:
-        emb = st.text_input(
-            "Gemini API key for embeddings",
-            type="password",
-            value=st.session_state.get("api_key_gemini", ""),
+    # ── AI configuration (read-only; set via env / .env) ──────────────
+    st.markdown('<div class="dp-overline">AI configuration</div>', unsafe_allow_html=True)
+    if source == "env":
+        st.success(
+            f"**{meta['label']}** · `{llm_service.active_model(provider)}` · "
+            f"key {llm_service.mask_key(key)} (from environment)"
         )
-        if st.button("Save embeddings key"):
-            st.session_state["api_key_gemini"] = emb.strip()
-            st.success("Saved.")
-            st.rerun()
-    status = "enabled" if llm_service.embeddings_available() else "disabled (keyword-only)"
-    st.caption(f"Semantic search is currently **{status}**.")
+    else:
+        st.warning(
+            f"**{meta['label']}** · `{llm_service.active_model(provider)}` · "
+            f"**no API key found.** Set `{meta['env']}` in your environment (`.env` "
+            f"locally, or your host's env vars) to enable AI features."
+        )
+    emb = "enabled" if llm_service.embeddings_available() else "disabled (keyword-only search)"
+    st.caption(
+        f"Semantic search embeddings: **{emb}** — uses Google `text-embedding-004`, "
+        f"which needs `GEMINI_API_KEY` regardless of the chat provider."
+    )
+    st.caption(
+        "Provider, model, and keys are configured with the `LLM_PROVIDER`, `LLM_MODEL`, "
+        "and `<PROVIDER>_API_KEY` environment variables — not in the UI."
+    )
 
     st.markdown("---")
 
     # ── Appearance ────────────────────────────────────────────────────
     st.markdown('<div class="dp-overline">Appearance</div>', unsafe_allow_html=True)
+    _theme_opts = ["auto", "light", "dark"]
+
+    def _persist_theme():
+        st.session_state["ui_theme"] = st.session_state["_ui_theme_w"]
+
     st.selectbox(
         "Theme",
-        ["auto", "light", "dark"],
-        key="ui_theme",
+        _theme_opts,
+        index=_theme_opts.index(st.session_state.get("ui_theme", "auto")),
+        key="_ui_theme_w",
+        on_change=_persist_theme,
         help="'auto' follows your operating system setting.",
     )
 

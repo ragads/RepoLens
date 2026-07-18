@@ -14,14 +14,21 @@ st.set_page_config(
 # .env is the local fallback; on Render the real env vars are already present.
 load_dotenv()
 
-from services import llm_service  # noqa: E402
+# Keep page-local widget values alive across navigation. Streamlit purges a
+# widget-keyed session value when its page isn't rendered; re-touching these
+# before the widgets are recreated preserves the theme and the ingest URL/branch
+# when switching sections.
+for _k in ("ui_theme", "ingest_url", "ingest_branch"):
+    if _k in st.session_state:
+        st.session_state[_k] = st.session_state[_k]
+
+from components.auth_gate import render_logout, require_login  # noqa: E402
 from theme import inject_theme  # noqa: E402
 
-# Session-state keys override the environment for this process. Must run before
-# any module calls os.getenv("<PROVIDER>_API_KEY").
-llm_service.export_keys_to_env()
-
 inject_theme(st.session_state.get("ui_theme", "auto"))
+
+# Gate the whole app behind login / self-registration; halts here until signed in.
+authenticator = require_login()
 
 
 # ── Router ──────────────────────────────────────────────────────────────
@@ -81,32 +88,9 @@ with st.sidebar:
         label_visibility="collapsed",
     )
 
-    # Footer as ONE html block so the collapsed rail can hide it as a unit.
-    _provider = llm_service.active_provider()
-    _key, _source = llm_service.resolve_key(_provider)
-    if _source == "none":
-        _status = ('<div style="color:var(--medium);font-size:0.75rem;">'
-                   "⚠ No API key — set one in Settings</div>")
-    else:
-        _status = (
-            f'<div style="color:var(--text-muted);font-size:0.75rem;">'
-            f'{llm_service.PROVIDERS[_provider]["label"]}<br>'
-            f'<span style="opacity:.7">{llm_service.active_model(_provider)}</span></div>'
-        )
-    st.markdown(
-        f"""
-        <div class="dp-sidebar-foot">
-          <hr style="margin:16px 0 12px">
-          {_status}
-          <div style="height:8px"></div>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <span style="width:6px;height:6px;border-radius:50%;
-                background:var(--success);display:inline-block;"></span>
-            <span style="color:var(--text-muted);font-size:0.75rem;">Local SQLite</span>
-          </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+    with st.container(key="sidebar_foot"):
+        st.markdown("<hr style='margin:16px 0 12px'>", unsafe_allow_html=True)
+        render_logout(authenticator)
 
 
 _module_name, _fn_name = SECTIONS[choice]

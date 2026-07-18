@@ -64,7 +64,7 @@ def render_chat_widget():
             return
 
         if llm_service.resolve_key()[0] is None:
-            st.caption("Set an API key in Settings to enable chat.")
+            st.caption("Configure a provider API key in the environment to enable chat.")
             return
 
         st.caption(
