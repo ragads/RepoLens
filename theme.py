@@ -23,6 +23,7 @@ TOKENS = {
         "accent": "#4F46E5",
         "accent-hover": "#4338CA",
         "accent-soft": "#EEF2FF",
+        "accent-rgb": "79,70,229",
         "focus-ring": "rgba(79,70,229,0.35)",
         # severity / semantic
         "critical": "#DC2626",
@@ -42,6 +43,8 @@ TOKENS = {
         "shadow-sm": "0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04)",
         "shadow-md": "0 4px 12px rgba(16,24,40,.08)",
         "shadow-lg": "0 12px 24px rgba(16,24,40,.10)",
+        "bg-image": "none",
+        "card-blur": "0px",
     },
     "dark": {
         "bg": "#0B0F1A",
@@ -55,6 +58,7 @@ TOKENS = {
         "accent": "#6366F1",
         "accent-hover": "#818CF8",
         "accent-soft": "rgba(99,102,241,0.14)",
+        "accent-rgb": "99,102,241",
         "focus-ring": "rgba(99,102,241,0.45)",
         "critical": "#F87171",
         "critical-soft": "rgba(248,113,113,0.14)",
@@ -72,6 +76,8 @@ TOKENS = {
         "shadow-sm": "0 1px 2px rgba(0,0,0,.4)",
         "shadow-md": "0 6px 16px rgba(0,0,0,.5)",
         "shadow-lg": "0 16px 32px rgba(0,0,0,.55)",
+        "bg-image": "none",
+        "card-blur": "0px",
     },
 }
 
@@ -108,9 +114,56 @@ def _token_layer(mode: str) -> str:
 
 
 _STYLES = """
+/* ── Motion system ────────────────────────────────────── */
+:root {
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur-fast: 150ms;
+    --dur-base: 240ms;
+    --dur-slow: 420ms;
+}
+@keyframes dp-fade-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes dp-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+@keyframes dp-panel-in {
+    from { opacity: 0; transform: translateY(16px) scale(.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes dp-pulse-ring {
+    0%   { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), .40); }
+    70%  { box-shadow: 0 0 0 14px rgba(var(--accent-rgb), 0); }
+    100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0); }
+}
+@keyframes dp-shimmer {
+    0%   { background-position: -300% 0; }
+    100% { background-position: 300% 0; }
+}
+@keyframes dp-float {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-6px); }
+}
+/* Respect the OS-level reduced-motion preference — everything above becomes
+   an instant cut instead of a forced animation. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
 /* ── Base ─────────────────────────────────────────────── */
 .stApp {
-    background: var(--bg) !important;
+    background-color: var(--bg) !important;
+    background-image: var(--bg-image) !important;
+    background-attachment: fixed !important;
+    background-size: cover !important;
     color: var(--text-primary) !important;
     font-family: var(--font-ui) !important;
 }
@@ -213,93 +266,23 @@ p, li, span, label, div[data-testid="stMarkdownContainer"] p {
 }
 .dp-subtitle { color: var(--text-muted); font-size: 0.8125rem; margin: 2px 0 0; }
 
-/* ── Sidebar ──────────────────────────────────────────── */
+/* ── Sidebar (Hidden) ─────────────────────────────────── */
 section[data-testid="stSidebar"] {
-    background: var(--surface) !important;
-    border-right: 1px solid var(--border) !important;
-}
-section[data-testid="stSidebar"] > div { padding-top: 8px; }
-
-/* logo lockup */
-.dp-logo-wrap {
-    display: flex; align-items: center; gap: 10px; padding: 2px 6px 14px;
-}
-.dp-logo-mark { flex: 0 0 auto; line-height: 0; }
-.dp-logo-text {
-    font-size: 0.95rem; font-weight: 650; letter-spacing: -0.01em;
-    color: var(--text-primary); white-space: nowrap;
-}
-
-/* ── Collapsed = a slim rail that keeps the logo, instead of vanishing ── */
-section[data-testid="stSidebar"][aria-expanded="false"] {
-    min-width: 60px !important; max-width: 60px !important; width: 60px !important;
-    transform: none !important; visibility: visible !important; overflow: hidden !important;
-}
-section[data-testid="stSidebar"][aria-expanded="false"] .dp-logo-text,
-section[data-testid="stSidebar"][aria-expanded="false"] div[role="radiogroup"],
-section[data-testid="stSidebar"][aria-expanded="false"] hr,
-section[data-testid="stSidebar"][aria-expanded="false"] .st-key-sidebar_foot,
-section[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"] {
     display: none !important;
 }
-section[data-testid="stSidebar"][aria-expanded="false"] .dp-logo-wrap {
-    justify-content: center !important;
-    padding: 46px 0 6px !important;   /* clear the pinned expand button above */
-}
-
-/* The expand (») button shows ONLY when collapsed, pinned onto the rail — not
-   floating in the empty content area. The sidebar sits at z-index 999991 and the
-   button lives in the header (999990), so without lifting the header above the
-   sidebar the rail covers the button and it can't be clicked. */
-body:has(section[data-testid="stSidebar"][aria-expanded="false"])
-    header[data-testid="stHeader"] { z-index: 999999 !important; }
-[data-testid="stExpandSidebarButton"] { display: none !important; }
-body:has(section[data-testid="stSidebar"][aria-expanded="false"])
-    [data-testid="stExpandSidebarButton"] {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    position: fixed !important;
-    top: 12px !important; left: 13px !important;
-    z-index: 1000 !important;
-    width: 34px !important; height: 34px !important;
-    align-items: center !important; justify-content: center !important;
-    background: var(--surface) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: var(--radius-md) !important;
-    box-shadow: var(--shadow-sm) !important;
-}
-
-/* radio-as-nav.
-   DOM per option: <label data-testid="stRadioOption" data-selected="true|false">
-                     <span sr-only><input></span>
-                     <div><div><div.circle/><div data-testid="stMarkdownContainer"/></div></div>
-   The circle is the div immediately preceding the markdown container. */
-section[data-testid="stSidebar"] div[role="radiogroup"] { gap: 2px; }
-section[data-testid="stSidebar"] label[data-testid="stRadioOption"]
-    div:has(+ div[data-testid="stMarkdownContainer"]) {
+[data-testid="stSidebarCollapseButton"] {
     display: none !important;
 }
-section[data-testid="stSidebar"] label[data-testid="stRadioOption"] {
-    display: flex; align-items: center; width: 100%;
-    padding: 10px 12px; margin: 0;
-    border-radius: var(--radius-md);
-    cursor: pointer; transition: background .12s ease, color .12s ease;
-    border-left: 3px solid transparent;
+[data-testid="stExpandSidebarButton"] {
+    display: none !important;
 }
-section[data-testid="stSidebar"] label[data-testid="stRadioOption"] p {
-    font-size: 0.875rem !important; font-weight: 500 !important;
-    color: var(--text-secondary) !important; margin: 0 !important;
-}
-section[data-testid="stSidebar"] label[data-testid="stRadioOption"]:hover {
-    background: var(--surface-2);
-}
-section[data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"] {
-    background: var(--accent-soft);
-    border-left: 3px solid var(--accent);
-}
-section[data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"] p {
-    color: var(--accent) !important; font-weight: 600 !important;
+/* Center the dashboard and limit width on ultra-wide screens */
+div[data-testid="stAppViewBlockContainer"] {
+    max-width: 1400px !important;
+    margin: 0 auto !important;
+    padding-top: 2.5rem !important;
+    padding-left: 2rem !important;
+    padding-right: 2rem !important;
 }
 
 /* ── Buttons ──────────────────────────────────────────── */
@@ -311,12 +294,16 @@ button[data-testid="stBaseButton-primary"] {
     font-weight: 600 !important; font-size: 0.9rem !important;
     padding: 8px 16px !important;
     box-shadow: var(--shadow-xs) !important;
-    transition: background .12s ease, box-shadow .12s ease;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 button[data-testid="stBaseButton-primary"]:hover {
     background: var(--accent-hover) !important;
     border-color: var(--accent-hover) !important;
-    box-shadow: var(--shadow-sm) !important;
+    box-shadow: 0 4px 14px var(--focus-ring) !important;
+    transform: translateY(-1px) !important;
+}
+button[data-testid="stBaseButton-primary"]:active {
+    transform: translateY(1px) !important;
 }
 button[data-testid="stBaseButton-secondary"] {
     background: var(--surface) !important;
@@ -325,12 +312,17 @@ button[data-testid="stBaseButton-secondary"] {
     border-radius: var(--radius-md) !important;
     font-weight: 500 !important; font-size: 0.9rem !important;
     padding: 8px 16px !important;
-    transition: background .12s ease, border-color .12s ease;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 button[data-testid="stBaseButton-secondary"]:hover {
     background: var(--surface-2) !important;
     border-color: var(--border-strong) !important;
     color: var(--text-primary) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+button[data-testid="stBaseButton-secondary"]:active {
+    transform: translateY(1px) !important;
 }
 button:focus-visible { outline: 3px solid var(--focus-ring) !important; outline-offset: 1px; }
 
@@ -378,6 +370,10 @@ button[role="tab"] { border-radius: var(--radius-sm) var(--radius-sm) 0 0 !impor
     border: 1px solid var(--border) !important;
     border-radius: var(--radius-md) !important;
     font-size: 0.9rem !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.stTextInput input:hover, .stTextArea textarea:hover {
+    border-color: var(--border-strong) !important;
 }
 /* The input's root wrapper defaults to the light secondaryBackground; on password
    fields it shows as a white box behind the reveal-eye. Match it to the surface. */
@@ -404,6 +400,7 @@ button[role="tab"] { border-radius: var(--radius-sm) var(--radius-sm) 0 0 !impor
 .stTextInput input:focus, .stTextArea textarea:focus {
     border-color: var(--accent) !important;
     box-shadow: 0 0 0 3px var(--focus-ring) !important;
+    transform: scale(1.005) !important;
 }
 /* Selectbox / multiselect. The visible control is div[role="group"] (selectbox) or
    the baseweb select container (multiselect); without this they keep config.toml's
@@ -510,8 +507,21 @@ div[data-testid="stExpander"] {
     border-radius: var(--radius-lg) !important;
     box-shadow: none !important;
 }
-div[data-testid="stExpander"] summary { color: var(--text-primary) !important; font-size: 0.9rem; }
-div[data-testid="stExpander"] summary:hover { color: var(--accent) !important; }
+/* Streamlit paints the summary header with its own light secondaryBackgroundColor
+   (from .streamlit/config.toml) regardless of our tokens — force it transparent so
+   the parent stExpander's --surface shows through in dark mode too. */
+div[data-testid="stExpander"] summary {
+    background: transparent !important;
+    color: var(--text-primary) !important;
+    font-size: 0.9rem;
+    border-radius: var(--radius-lg) !important;
+    transition: color var(--dur-fast) var(--ease-in-out) !important;
+}
+div[data-testid="stExpander"] summary:hover { color: var(--accent) !important; background: var(--surface-2) !important; }
+div[data-testid="stExpander"] summary p { color: inherit !important; }
+div[data-testid="stExpander"] svg, div[data-testid="stExpander"] [data-testid="stIconMaterial"] {
+    color: var(--text-secondary) !important;
+}
 
 /* ── Tabs (used only for in-section sub-nav) ──────────── */
 button[data-baseweb="tab"] { color: var(--text-secondary) !important; }
@@ -542,6 +552,23 @@ section[data-testid="stFileUploaderDropzone"] {
 .dp-empty {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius-lg); padding: 48px 24px; text-align: center;
+}
+
+/* ── Glassmorphism (frosted cards) ─────────────────────
+   card-blur is 0px for solid palettes (no visual change) and a real blur
+   for gradient-mesh palettes (e.g. Nebula Glass), so the colorful backdrop
+   shows through the translucent --surface / --surface-2 colors. */
+.dp-card,
+.dp-empty,
+div[data-testid="stExpander"],
+div[class*="st-key-ingest_card"],
+div[class*="st-key-details_card"],
+.st-key-dp_chat_panel,
+.st-key-auth_card,
+div[data-testid="stAlertContainer"],
+[data-testid="stPopoverBody"] {
+    backdrop-filter: blur(var(--card-blur)) saturate(160%);
+    -webkit-backdrop-filter: blur(var(--card-blur)) saturate(160%);
 }
 
 /* ── Badges / chips ───────────────────────────────────── */
@@ -639,22 +666,65 @@ button[data-testid="stPopoverButton"] p { color: inherit !important; }
     border-radius: 16px !important;
     box-shadow: var(--shadow-lg) !important;
     padding: 14px 16px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    height: 520px !important;
+}
+.st-key-dp_chat_panel {
+    gap: 0px !important;
+}
+/* Streamlit wraps each st.container(key=...) child in an unclassed
+   [data-testid="stLayoutWrapper"] div, not the .element-container this
+   used to target. That wrapper is what needs flex-grow so the scroll
+   area fills the panel and pushes the chat input down to the bottom
+   edge instead of leaving it stranded above empty space. */
+.st-key-dp_chat_panel > *:has(.st-key-dp_chat_scroll) {
+    flex-grow: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
 }
 .st-key-dp_chat_scroll {
-    height: 300px !important; overflow-y: auto !important;
+    flex-grow: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow-y: auto !important;
     margin: 6px -4px 8px; padding: 0 4px;
+    min-height: 0 !important;
 }
-.st-key-dp_chat_close button {
+.st-key-dp_chat_close button, .st-key-dp_chat_size button {
     background: transparent !important; border: none !important;
     color: var(--text-muted) !important; padding: 0 !important;
+    width: 28px !important;
+    height: 28px !important;
     min-height: 28px !important;
+    min-width: 28px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    line-height: 1 !important;
+    font-size: 14px !important;
 }
-.st-key-dp_chat_close button:hover { color: var(--text-primary) !important; }
+.st-key-dp_chat_close button:hover, .st-key-dp_chat_size button:hover { color: var(--text-primary) !important; }
 .st-key-dp_chat_panel [data-testid="stChatInput"] {
     background: var(--surface-2) !important; border-color: var(--border) !important;
 }
 .st-key-dp_chat_panel [data-testid="stChatInput"] textarea {
     background: transparent !important; color: var(--text-primary) !important;
+}
+
+/* Custom Chat Bubble Styling */
+.st-key-dp_chat_panel [data-testid="stChatMessage"] {
+    background-color: var(--surface-2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: 12px 16px !important;
+    margin-bottom: 8px !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+.st-key-dp_chat_panel [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatar"] [data-testid="stChatMessageAvatarUser"]) {
+    background-color: var(--accent-soft) !important;
+    border-color: var(--focus-ring) !important;
 }
 
 /* ── Images (guide screenshots) ───────────────────────── */
@@ -686,6 +756,175 @@ div[data-testid="stProgress"] > div > div > div { background: var(--accent) !imp
 hr { border-color: var(--border) !important; }
 a { color: var(--accent) !important; }
 div[data-testid="column"] > div { gap: 0.75rem; }
+
+/* ── Custom Micro-interactions ───────────────────────── */
+.dp-lang-row {
+    display: flex !important;
+    justify-content: space-between !important;
+    padding: 6px 8px !important;
+    border-bottom: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.dp-lang-row:hover {
+    background: var(--surface-2) !important;
+    padding-left: 14px !important;
+    color: var(--accent) !important;
+}
+div[class*="st-key-ingest_card"], div[class*="st-key-details_card"] {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: 24px !important;
+    box-shadow: var(--shadow-sm) !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+div[class*="st-key-ingest_card"]:hover, div[class*="st-key-details_card"]:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+    border-color: var(--border-strong) !important;
+}
+div[class*="st-key-ingest_card"] { animation: dp-fade-up var(--dur-slow) var(--ease-out) both; }
+div[class*="st-key-details_card"] { animation: dp-fade-up var(--dur-slow) var(--ease-out) 60ms both; }
+
+/* ── App header ───────────────────────────────────────── */
+.st-key-app_header {
+    position: relative;
+    padding: 18px 4px 20px !important;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    animation: dp-fade-in var(--dur-slow) var(--ease-out) both;
+}
+.st-key-app_header::before {
+    content: "";
+    position: absolute; inset: -20px -2rem auto -2rem; height: 140px;
+    background: radial-gradient(60% 100% at 18% 0%, var(--accent-soft) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: -1;
+}
+.dp-logo-text {
+    background: linear-gradient(135deg, var(--text-primary) 35%, var(--accent) 120%) !important;
+    -webkit-background-clip: text !important; background-clip: text !important;
+    -webkit-text-fill-color: transparent !important; color: transparent !important;
+}
+.dp-logo-mark svg { transition: transform var(--dur-base) var(--ease-out); }
+.st-key-app_header:hover .dp-logo-mark svg { transform: rotate(-6deg) scale(1.05); }
+
+/* ── Segmented control (appearance mode) ─────────────────
+   st.segmented_control renders a stButtonGroup of individual buttons
+   (kind="segmented_control" / "segmented_controlActive"), not a label-based
+   radio group. Restyle the group as one pill with a highlighted active
+   button so it reads as a single toggle rather than three loose buttons. */
+div[data-testid="stButtonGroup"] div[data-baseweb="button-group"] {
+    background: var(--surface-2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-full) !important;
+    padding: 3px !important;
+    gap: 2px !important;
+}
+button[data-testid="stBaseButton-segmented_control"],
+button[data-testid="stBaseButton-segmented_controlActive"] {
+    border-radius: var(--radius-full) !important;
+    border: none !important;
+    background: transparent !important;
+    min-height: 28px !important;
+    padding: 4px 12px !important;
+    box-shadow: none !important;
+    transform: none !important;
+    transition: all var(--dur-fast) var(--ease-in-out) !important;
+}
+button[data-testid="stBaseButton-segmented_controlActive"] {
+    background: var(--surface) !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+button[data-testid="stBaseButton-segmented_controlActive"] p {
+    color: var(--accent) !important; font-weight: 600 !important;
+}
+button[data-testid="stBaseButton-segmented_control"] p {
+    color: var(--text-muted) !important; font-weight: 500 !important;
+}
+button[data-testid="stBaseButton-segmented_control"]:hover {
+    background: transparent !important; transform: none !important; box-shadow: none !important;
+}
+button[data-testid="stBaseButton-segmented_control"]:hover p { color: var(--text-primary) !important; }
+div[data-testid="stButtonGroup"] p { font-size: 0.8rem !important; }
+
+/* ── Primary button shine sweep ───────────────────────── */
+button[data-testid="stBaseButton-primary"] { position: relative; overflow: hidden; }
+button[data-testid="stBaseButton-primary"]::after {
+    content: "";
+    position: absolute; top: 0; left: -75%; width: 40%; height: 100%;
+    background: linear-gradient(120deg, transparent, rgba(255,255,255,.32), transparent);
+    transform: skewX(-20deg);
+    transition: left var(--dur-slow) var(--ease-out);
+    pointer-events: none;
+}
+button[data-testid="stBaseButton-primary"]:hover::after { left: 130%; }
+
+/* ── KPI stat row ─────────────────────────────────────── */
+.st-key-stats_row div[data-testid="stColumn"] { animation: dp-fade-up var(--dur-base) var(--ease-out) both; }
+.st-key-stats_row div[data-testid="stColumn"]:nth-of-type(1) { animation-delay: 0ms; }
+.st-key-stats_row div[data-testid="stColumn"]:nth-of-type(2) { animation-delay: 60ms; }
+.st-key-stats_row div[data-testid="stColumn"]:nth-of-type(3) { animation-delay: 120ms; }
+.st-key-stats_row div[data-testid="stColumn"]:nth-of-type(4) { animation-delay: 180ms; }
+.dp-kpi-icon { transition: transform var(--dur-base) var(--ease-out); }
+.dp-card:hover .dp-kpi-icon { transform: scale(1.12) rotate(-4deg); }
+.dp-card {
+    transition: transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out),
+                border-color var(--dur-base) var(--ease-out);
+}
+.dp-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--border-strong);
+}
+
+/* ── Empty state ──────────────────────────────────────── */
+.dp-empty { animation: dp-fade-up var(--dur-slow) var(--ease-out) both; }
+.dp-empty > div:first-child { display: inline-block; animation: dp-float 3.2s var(--ease-in-out) infinite; }
+
+/* ── Skeleton loaders ─────────────────────────────────── */
+.dp-skeleton {
+    height: 40px; border-radius: var(--radius-md); margin-bottom: 8px;
+    background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 37%, var(--surface-2) 63%);
+    background-size: 400% 100%;
+    animation: dp-shimmer 1.4s ease-in-out infinite;
+}
+
+/* ── Progress bar shimmer ─────────────────────────────── */
+div[data-testid="stProgress"] > div > div > div {
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 50%, var(--accent) 100%) !important;
+    background-size: 300% 100% !important;
+    animation: dp-shimmer 1.6s linear infinite !important;
+    transition: width var(--dur-base) var(--ease-out) !important;
+}
+
+/* ── Data rows (file browser, recent queries) ─────────── */
+.dp-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 12px; border-radius: var(--radius-md);
+    border: 1px solid transparent;
+    transition: all var(--dur-fast) var(--ease-in-out);
+    animation: dp-fade-up var(--dur-base) var(--ease-out) both;
+}
+.dp-row:hover { background: var(--surface-2); border-color: var(--border); }
+
+/* ── Chat widget motion ───────────────────────────────── */
+.st-key-dp_chat_launcher button {
+    animation: dp-pulse-ring 2.6s var(--ease-in-out) infinite;
+}
+.st-key-dp_chat_launcher button:hover { animation: none; }
+.st-key-dp_chat_panel { animation: dp-panel-in var(--dur-base) var(--ease-out) both; }
+.st-key-dp_chat_panel [data-testid="stChatMessage"] {
+    animation: dp-fade-up var(--dur-base) var(--ease-out) both;
+    transition: transform var(--dur-fast) var(--ease-in-out);
+}
+.st-key-dp_chat_scroll div[class*="st-key-sug_btn_"] {
+    animation: dp-fade-up var(--dur-base) var(--ease-out) both;
+}
+.st-key-dp_chat_scroll div[class*="st-key-sug_btn_0"] { animation-delay: 0ms; }
+.st-key-dp_chat_scroll div[class*="st-key-sug_btn_1"] { animation-delay: 60ms; }
+.st-key-dp_chat_scroll div[class*="st-key-sug_btn_2"] { animation-delay: 120ms; }
 """
 
 _FONTS = (
@@ -695,11 +934,219 @@ _FONTS = (
 )
 
 
-def inject_theme(mode: str = "auto") -> None:
-    """Inject the full stylesheet. Call exactly once per rerun, from app.py."""
+PALETTES = {
+    "Indigo Modern": {
+        "light-accent": "#4F46E5", "light-accent-hover": "#4338CA", "light-accent-soft": "#EEF2FF",
+        "dark-accent": "#6366F1", "dark-accent-hover": "#818CF8", "dark-accent-soft": "rgba(99,102,241,0.14)",
+        "light-bg": "#F7F8FA", "dark-bg": "#0B0F1A",
+        "light-surface": "#FFFFFF", "dark-surface": "#131926",
+        "light-surface-2": "#F1F5F9", "dark-surface-2": "#1A2233",
+        "light-border": "#E2E8F0", "dark-border": "#232B3D",
+        "light-border-strong": "#CBD5E1", "dark-border-strong": "#33405A",
+    },
+    "Nordic Frost": {
+        "light-accent": "#0D9488", "light-accent-hover": "#0F766E", "light-accent-soft": "#F0FDFA",
+        "dark-accent": "#2DD4BF", "dark-accent-hover": "#5EEAD4", "dark-accent-soft": "rgba(45,212,191,0.14)",
+        "light-bg": "#F1F5F9", "dark-bg": "#0F172A",
+        "light-surface": "#FFFFFF", "dark-surface": "#1E293B",
+        "light-surface-2": "#E2E8F0", "dark-surface-2": "#334155",
+        "light-border": "#E2E8F0", "dark-border": "#1E293B",
+        "light-border-strong": "#CBD5E1", "dark-border-strong": "#475569",
+    },
+    "Cyberpunk Amber": {
+        "light-accent": "#D97706", "light-accent-hover": "#B45309", "light-accent-soft": "#FEF3C7",
+        "dark-accent": "#FBBF24", "dark-accent-hover": "#FCD34D", "dark-accent-soft": "rgba(251,191,36,0.14)",
+        "light-bg": "#FAF6F0", "dark-bg": "#0F0C08",
+        "light-surface": "#FFFFFF", "dark-surface": "#1A1612",
+        "light-surface-2": "#F5ECE1", "dark-surface-2": "#26201A",
+        "light-border": "#EBE2D5", "dark-border": "#2A231C",
+        "light-border-strong": "#D7C9B7", "dark-border-strong": "#3C3228",
+    },
+    "Dracula Crimson": {
+        "light-accent": "#E11D48", "light-accent-hover": "#BE123C", "light-accent-soft": "#FFF1F2",
+        "dark-accent": "#FB7185", "dark-accent-hover": "#FDA4AF", "dark-accent-soft": "rgba(244,63,94,0.14)",
+        "light-bg": "#FFF5F5", "dark-bg": "#180F11",
+        "light-surface": "#FFFFFF", "dark-surface": "#24181B",
+        "light-surface-2": "#FFE3E3", "dark-surface-2": "#342227",
+        "light-border": "#FFD2D2", "dark-border": "#3A282D",
+        "light-border-strong": "#FFA8A8", "dark-border-strong": "#52383F",
+    },
+    "Tokyo Night": {
+        "light-accent": "#7C3AED", "light-accent-hover": "#6D28D9", "light-accent-soft": "#F5F3FF",
+        "dark-accent": "#A78BFA", "dark-accent-hover": "#C084FC", "dark-accent-soft": "rgba(167,139,250,0.14)",
+        "light-bg": "#F5F6FA", "dark-bg": "#0D0E15",
+        "light-surface": "#FFFFFF", "dark-surface": "#161722",
+        "light-surface-2": "#EBEFF8", "dark-surface-2": "#212333",
+        "light-border": "#DFE4F2", "dark-border": "#2A2C40",
+        "light-border-strong": "#CCD4EC", "dark-border-strong": "#3F4260",
+    },
+    "Aurora Mint": {
+        "light-accent": "#0F766E", "light-accent-hover": "#0D9488", "light-accent-soft": "#F0FDFA",
+        "dark-accent": "#2DD4BF", "dark-accent-hover": "#14B8A6", "dark-accent-soft": "rgba(45,212,191,0.14)",
+        "light-bg": "#F8FAFC", "dark-bg": "#0A0E17",
+        "light-surface": "#FFFFFF", "dark-surface": "#111827",
+        "light-surface-2": "#F1F5F9", "dark-surface-2": "#1F2937",
+        "light-border": "#E2E8F0", "dark-border": "#1F2937",
+        "light-border-strong": "#CBD5E1", "dark-border-strong": "#374151",
+    },
+    "Obsidian Gold": {
+        "light-accent": "#D97706", "light-accent-hover": "#B45309", "light-accent-soft": "#FEF3C7",
+        "dark-accent": "#F59E0B", "dark-accent-hover": "#FBBF24", "dark-accent-soft": "rgba(245,158,11,0.14)",
+        "light-bg": "#FAF9F6", "dark-bg": "#080705",
+        "light-surface": "#FFFFFF", "dark-surface": "#12110F",
+        "light-surface-2": "#F5ECE1", "dark-surface-2": "#1E1C1A",
+        "light-border": "#EBE2D5", "dark-border": "#211F1D",
+        "light-border-strong": "#D7C9B7", "dark-border-strong": "#322E2A",
+    },
+    "Cyber Synth": {
+        "light-accent": "#D946EF", "light-accent-hover": "#C084FC", "light-accent-soft": "#FDF4FF",
+        "dark-accent": "#F472B6", "dark-accent-hover": "#FB7185", "dark-accent-soft": "rgba(244,114,182,0.14)",
+        "light-bg": "#FAF5FF", "dark-bg": "#0F0A1C",
+        "light-surface": "#FFFFFF", "dark-surface": "#160F29",
+        "light-surface-2": "#F3E8FF", "dark-surface-2": "#24183E",
+        "light-border": "#E9D5FF", "dark-border": "#2E1B4E",
+        "light-border-strong": "#D8B4FE", "dark-border-strong": "#442B6B",
+    },
+    "Oceanic Sapphire": {
+        "light-accent": "#1D4ED8", "light-accent-hover": "#1E40AF", "light-accent-soft": "#EFF6FF",
+        "dark-accent": "#38BDF8", "dark-accent-hover": "#60A5FA", "dark-accent-soft": "rgba(56,189,248,0.14)",
+        "light-bg": "#F0F4F8", "dark-bg": "#050B14",
+        "light-surface": "#FFFFFF", "dark-surface": "#0E1726",
+        "light-surface-2": "#E1E8F0", "dark-surface-2": "#172237",
+        "light-border": "#D0DBE5", "dark-border": "#1B2A4A",
+        "light-border-strong": "#B0C4DE", "dark-border-strong": "#2B3E6C",
+    },
+    "Aura Rose": {
+        "light-accent": "#BE123C", "light-accent-hover": "#9F1239", "light-accent-soft": "#FFF1F2",
+        "dark-accent": "#FB7185", "dark-accent-hover": "#FDA4AF", "dark-accent-soft": "rgba(251,113,133,0.14)",
+        "light-bg": "#FFF5F5", "dark-bg": "#140E0F",
+        "light-surface": "#FFFFFF", "dark-surface": "#1C1315",
+        "light-surface-2": "#FFE3E3", "dark-surface-2": "#281B1E",
+        "light-border": "#FFD2D2", "dark-border": "#352428",
+        "light-border-strong": "#FFA8A8", "dark-border-strong": "#4E353B",
+    },
+    "Steel Slate": {
+        "light-accent": "#475569", "light-accent-hover": "#334155", "light-accent-soft": "#F1F5F9",
+        "dark-accent": "#94A3B8", "dark-accent-hover": "#CBD5E1", "dark-accent-soft": "rgba(148,163,184,0.14)",
+        "light-bg": "#F8FAFC", "dark-bg": "#0F172A",
+        "light-surface": "#FFFFFF", "dark-surface": "#1E293B",
+        "light-surface-2": "#E2E8F0", "dark-surface-2": "#334155",
+        "light-border": "#E2E8F0", "dark-border": "#334155",
+        "light-border-strong": "#CBD5E1", "dark-border-strong": "#475569",
+    },
+    "Nebula Glass": {
+        "light-accent": "#9333EA", "light-accent-hover": "#7E22CE", "light-accent-soft": "rgba(147,51,234,0.12)",
+        "dark-accent": "#F472B6", "dark-accent-hover": "#FB7185", "dark-accent-soft": "rgba(244,114,182,0.18)",
+        "light-bg": "#F3E8FF", "dark-bg": "#120B1F",
+        "light-surface": "rgba(255,255,255,0.55)", "dark-surface": "rgba(30,20,50,0.55)",
+        "light-surface-2": "rgba(255,255,255,0.35)", "dark-surface-2": "rgba(255,255,255,0.06)",
+        "light-border": "rgba(255,255,255,0.6)", "dark-border": "rgba(255,255,255,0.12)",
+        "light-border-strong": "rgba(255,255,255,0.85)", "dark-border-strong": "rgba(255,255,255,0.22)",
+        "light-bg-image": (
+            "radial-gradient(60% 50% at 15% 10%, rgba(196,132,252,0.55) 0%, transparent 60%),"
+            "radial-gradient(55% 45% at 85% 15%, rgba(244,114,182,0.45) 0%, transparent 60%),"
+            "radial-gradient(60% 55% at 50% 100%, rgba(129,140,248,0.45) 0%, transparent 65%)"
+        ),
+        "dark-bg-image": (
+            "radial-gradient(60% 50% at 15% 10%, rgba(147,51,234,0.38) 0%, transparent 60%),"
+            "radial-gradient(55% 45% at 85% 15%, rgba(219,39,119,0.32) 0%, transparent 60%),"
+            "radial-gradient(60% 55% at 50% 100%, rgba(79,70,229,0.38) 0%, transparent 65%)"
+        ),
+        "card-blur": "18px",
+    },
+}
+
+def hex_to_rgb_str(hex_color: str) -> str:
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 6:
+        r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return f"{r},{g},{b}"
+    return "99,102,241"
+
+def inject_theme(mode: str = "auto", palette_name: str = "Indigo Modern") -> None:
+    """Inject the full stylesheet with dynamic palette tokens."""
     if mode not in ("auto", "light", "dark"):
         mode = "auto"
+    if palette_name not in PALETTES:
+        palette_name = "Indigo Modern"
+        
+    p = PALETTES[palette_name]
+    
+    # Generate light and dark tokens dynamically
+    light_tokens = {
+        "bg": p["light-bg"],
+        "surface": p["light-surface"],
+        "surface-2": p["light-surface-2"],
+        "border": p["light-border"],
+        "border-strong": p["light-border-strong"],
+        "text-primary": "#0F172A",
+        "text-secondary": "#475569",
+        "text-muted": "#94A3B8",
+        "accent": p["light-accent"],
+        "accent-hover": p["light-accent-hover"],
+        "accent-soft": p["light-accent-soft"],
+        "accent-rgb": hex_to_rgb_str(p["light-accent"]),
+        "focus-ring": f"rgba({hex_to_rgb_str(p['light-accent'])},0.35)",
+        "critical": "#DC2626",
+        "critical-soft": "#FEE2E2",
+        "high": "#EA580C",
+        "high-soft": "#FFEDD5",
+        "medium": "#D97706",
+        "medium-soft": "#FEF3C7",
+        "low": "#2563EB",
+        "low-soft": "#DBEAFE",
+        "info": "#475569",
+        "info-soft": "#F1F5F9",
+        "success": "#16A34A",
+        "success-soft": "#DCFCE7",
+        "shadow-xs": "0 1px 2px rgba(16,24,40,.05)",
+        "shadow-sm": "0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04)",
+        "shadow-md": "0 4px 12px rgba(16,24,40,.08)",
+        "shadow-lg": "0 12px 24px rgba(16,24,40,.10)",
+        "bg-image": p.get("light-bg-image", "none"),
+        "card-blur": p.get("card-blur", "0px"),
+    }
+
+    dark_tokens = {
+        "bg": p["dark-bg"],
+        "surface": p["dark-surface"],
+        "surface-2": p["dark-surface-2"],
+        "border": p["dark-border"],
+        "border-strong": p["dark-border-strong"],
+        "text-primary": "#E6EAF2",
+        "text-secondary": "#9BA6BC",
+        "text-muted": "#6B7688",
+        "accent": p["dark-accent"],
+        "accent-hover": p["dark-accent-hover"],
+        "accent-soft": p["dark-accent-soft"],
+        "accent-rgb": hex_to_rgb_str(p["dark-accent"]),
+        "focus-ring": f"rgba({hex_to_rgb_str(p['dark-accent'])},0.45)",
+        "critical": "#F87171",
+        "critical-soft": "rgba(248,113,113,0.14)",
+        "high": "#FB923C",
+        "high-soft": "rgba(251,146,60,0.14)",
+        "medium": "#FBBF24",
+        "medium-soft": "rgba(251,191,36,0.14)",
+        "low": "#60A5FA",
+        "low-soft": "rgba(96,165,250,0.14)",
+        "info": "#94A3B8",
+        "info-soft": "rgba(148,163,184,0.14)",
+        "success": "#4ADE80",
+        "success-soft": "rgba(74,222,128,0.14)",
+        "shadow-xs": "0 1px 2px rgba(0,0,0,.3)",
+        "shadow-sm": "0 1px 2px rgba(0,0,0,.4)",
+        "shadow-md": "0 6px 16px rgba(0,0,0,.5)",
+        "shadow-lg": "0 16px 32px rgba(0,0,0,.55)",
+        "bg-image": p.get("dark-bg-image", "none"),
+        "card-blur": p.get("card-blur", "0px"),
+    }
+
+    global TOKENS
+    TOKENS["light"] = light_tokens
+    TOKENS["dark"] = dark_tokens
+    
     st.markdown(
         f"<style>\n{_FONTS}\n\n{_token_layer(mode)}\n{_STYLES}\n</style>",
         unsafe_allow_html=True,
     )
+

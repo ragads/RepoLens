@@ -71,6 +71,14 @@ def init_sqlite():
             )
         """)
 
+        # Settings table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -159,10 +167,33 @@ def wipe_all():
         cursor.execute("DELETE FROM assistant_files")
         cursor.execute("DELETE FROM assistant_queries")
         cursor.execute("DELETE FROM assistant_audits")
+        cursor.execute("DELETE FROM assistant_settings")
         conn.commit()
         conn.close()
     except Exception as e:
         logger.error(f"SQLite wipe all failed: {e}")
+
+def get_setting(key: str, default: str = "") -> str:
+    try:
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM assistant_settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else default
+    except Exception as e:
+        logger.error(f"SQLite get_setting failed for {key}: {e}")
+        return default
+
+def set_setting(key: str, value: str):
+    try:
+        conn = sqlite3.connect(SQLITE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO assistant_settings (key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"SQLite set_setting failed for {key}: {e}")
 
 
 # ── Security audits ──────────────────────────────────────────────────

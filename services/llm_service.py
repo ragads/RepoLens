@@ -103,7 +103,7 @@ PROVIDERS = {
 
 DEFAULT_PROVIDER = "gemini"
 
-# Embeddings are Gemini-only (text-embedding-004) and independent of the chat
+# Embeddings are Gemini-only (gemini-embedding-001) and independent of the chat
 # provider. Without a Gemini key, get_embedding() returns None and search
 # degrades to keyword-only. See EMBEDDING_PROVIDER usage in Settings.
 EMBEDDING_PROVIDER = "gemini"

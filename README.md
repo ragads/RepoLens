@@ -64,7 +64,7 @@ Copy `.env.example` to `.env` and fill in whichever keys you use — all are opt
 cp .env.example .env
 ```
 
-> **Semantic search uses Gemini embeddings** (`text-embedding-004`), so it needs a Gemini key regardless of the chat provider. Without one, chunks store no embeddings and search degrades to keyword matching — nothing breaks, and the audit still runs.
+> **Semantic search uses Gemini embeddings** (`gemini-embedding-001`), so it needs a Gemini key regardless of the chat provider. Without one, chunks store no embeddings and search degrades to keyword matching — nothing breaks, and the audit still runs.
 
 ---
 
@@ -117,7 +117,7 @@ services/                  pure Python — no Streamlit imports below this line
   report_service.py        Markdown + PDF builders (fpdf2)
   database_service.py      thin facade over the store
   sqlite_service.py        schema + queries
-  embedding_service.py     text-embedding-004
+  embedding_service.py     gemini-embedding-001
   similarity_service.py    cosine similarity
 
 components/                cards.py (metric_card, severity_badge, empty_state), status.py

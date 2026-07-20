@@ -20,13 +20,19 @@ from services import llm_service
 from services import chat_service
 from services.database_service import (
     LANGUAGE_MAPPING,
+    delete_file,
     get_all_files,
     get_chunk_count,
     get_file_content,
     get_file_count,
     get_language_breakdown,
+    get_query_count,
+    get_recent_queries,
     get_storage_label,
     insert_file_with_chunks,
+    wipe_all,
+    get_setting,
+    set_setting,
 )
 
 logger = logging.getLogger("pages_dashboard")
@@ -163,6 +169,12 @@ def clone_and_index(repo_url: str, branch: str):
             progress.empty()
             return
 
+        # Wipe existing database rows and old state
+        wipe_all()
+        st.session_state["last_repo_readme"] = None
+        st.session_state["last_repo_explanation"] = None
+        st.session_state["chat_history"] = []
+
         for i, f in enumerate(files):
             status.markdown(f"`Indexing {f['path']}`")
             insert_file_with_chunks(f)
@@ -191,6 +203,8 @@ def clone_and_index(repo_url: str, branch: str):
             st.session_state["last_repo_explanation"] = generate_project_explanation(files)
 
         st.session_state["last_repo_name"] = repo_url
+        set_setting("active_repo_url", repo_url)
+        set_setting("active_branch", branch)
         st.rerun()
     except Exception as ex:  # noqa: BLE001
         st.error(f"Failed to clone and index repository: {ex}")
@@ -266,7 +280,7 @@ def ensure_readme_or_explanation():
     )
 
     st.session_state["last_repo_name"] = st.session_state.get(
-        "last_repo_name", "Currently Indexed Workspace"
+        "last_repo_name", get_setting("active_repo_url", "Currently Indexed Workspace")
     )
 
     if readme_id:
@@ -284,113 +298,80 @@ def ensure_readme_or_explanation():
 # ══════════════════════════════════════════════════════════════════════
 # Dashboard Sections
 # ══════════════════════════════════════════════════════════════════════
-def render_overview():
-    section_header("Overview", "Workspace status and indexed content at a glance.", level=2)
 
-    files = get_all_files()
-    if not files:
-        empty_state("◔", "Nothing indexed yet",
-                    "Head to Ingest Repository to analyze your first codebase.")
-        return
 
-    source_files = [f for f in files if f["file_type"] == "source_code"]
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        metric_card("☰", "Files indexed", get_file_count(), tone="accent")
-    with c2:
-        metric_card("◆", "Source files", len(source_files), tone="low")
-    with c3:
-        metric_card("⬡", "Chunks embedded", get_chunk_count(), tone="info")
-    with c4:
-        metric_card("▤", "Content size", get_storage_label(), tone="success")
-
-    st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+def render_repo_details():
+    st.markdown('<div class="dp-overline">Repository Info</div>', unsafe_allow_html=True)
+    repo = st.session_state.get("last_repo_name", "—")
+    st.markdown(
+        f'<div style="color:var(--text-primary);font-size:0.9rem;padding:6px 0;border-bottom:1px solid var(--border);">'
+        f'<span style="font-weight:600;">Active Repository:</span> {repo}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    
+    st.markdown('<div class="dp-overline" style="margin-top:16px;">Languages</div>', unsafe_allow_html=True)
+    langs = get_language_breakdown()
+    if langs:
+        for lang, count in langs.items():
+            st.markdown(
+                f'<div class="dp-lang-row">'
+                f'<span style="color:var(--text-primary);font-size:0.875rem;font-weight:500;">{lang}</span>'
+                f'<span style="color:var(--text-muted);font-size:0.875rem;">{count} files</span>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.caption("No language breakdown available.")
 
     if not llm_service.embeddings_available():
+        st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
         st.info(
-            "No Gemini key found, so chunks are stored without embeddings and search "
-            "falls back to keyword matching. Set `GEMINI_API_KEY` in your environment to "
-            "enable semantic search. (Your chat provider is unaffected.)"
+            "No Gemini key found. Chunks are stored without embeddings. "
+            "Set `GEMINI_API_KEY` to enable semantic search."
         )
-
-    left, right = st.columns([1, 1])
-    with left:
-        st.markdown('<div class="dp-overline">Languages</div>', unsafe_allow_html=True)
-        langs = get_language_breakdown()
-        if langs:
-            for lang, count in langs.items():
-                st.markdown(
-                    f'<div style="display:flex;justify-content:space-between;'
-                    f'padding:6px 0;border-bottom:1px solid var(--border);">'
-                    f'<span style="color:var(--text-primary);font-size:0.875rem">{lang}</span>'
-                    f'<span style="color:var(--text-muted);font-size:0.875rem">{count}</span>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-    with right:
-        st.markdown('<div class="dp-overline">Repository</div>', unsafe_allow_html=True)
-        repo = st.session_state.get("last_repo_name", "—")
-        st.markdown(
-            f'<div style="color:var(--text-primary);font-size:0.9rem;padding:6px 0">{repo}</div>',
-            unsafe_allow_html=True,
-        )
-
-
-SAMPLE_REPOS = [
-    ("Vulnerable Flask App", "https://github.com/we45/Vulnerable-Flask-App", "master",
-     "Python · scores F"),
-    ("Damn Vulnerable Web App", "https://github.com/anxolerd/dvpwa", "master",
-     "Python · planted bugs"),
-    ("Spoon-Knife", "https://github.com/octocat/Spoon-Knife", "main",
-     "HTML & CSS"),
-]
 
 
 def render_ingestion_section():
-    section_header("Ingest Repository",
-                   "Download a public GitHub repository and index it for analysis.", level=2)
-
+    st.markdown('<div class="dp-overline">WORKSPACE INGESTION</div>', unsafe_allow_html=True)
+    
     st.session_state.setdefault("ingest_url", "")
     st.session_state.setdefault("ingest_branch", "main")
 
-    st.markdown('<div class="dp-overline">Try a sample repository</div>',
-                unsafe_allow_html=True)
-    cols = st.columns(len(SAMPLE_REPOS))
-    for col, (name, url, branch, note) in zip(cols, SAMPLE_REPOS):
-        with col:
-            if st.button(name, key=f"sample_{name}", use_container_width=True):
-                st.session_state["ingest_url"] = url
-                st.session_state["ingest_branch"] = branch
-                st.rerun()
-            st.caption(note)
-
-    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+    def reset_workspace():
+        wipe_all()
+        st.session_state["ingest_url"] = ""
+        st.session_state["ingest_branch"] = "main"
+        st.session_state["last_repo_name"] = None
+        st.session_state["last_repo_readme"] = None
+        st.session_state["last_repo_explanation"] = None
+        st.session_state["chat_history"] = []
 
     repo_url = st.text_input("GitHub URL", key="ingest_url",
                              placeholder="https://github.com/owner/repo")
     branch = st.text_input("Branch", key="ingest_branch")
 
-    col, _ = st.columns([1, 2])
-    with col:
-        if st.button("Analyze Repository", type="primary", use_container_width=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Analyze Repository", key="analyze_repo_btn", type="primary", use_container_width=True):
             if repo_url:
                 clone_and_index(repo_url, branch)
             else:
                 st.error("Enter a repository URL first.")
-
-    with st.expander("Limitations & technical notes"):
-        st.markdown(
-            """
-* **Private repositories** are not accessible — no GitHub token is configured.
-* **Rate limits** apply to unauthenticated GitHub API and ZIP requests.
-* **Large repositories** may hit free-tier memory limits or time out while embedding.
-* **Filtered out:** binaries, images, `node_modules/`, `venv/`, dotfiles, and files over 300&nbsp;KB.
-"""
-        )
+    with col2:
+        st.button("Refresh Repository", key="refresh_repo_btn", type="secondary",
+                  use_container_width=True, on_click=reset_workspace)
 
 
 def render_project_overview():
     section_header("Project Overview", "README, or an AI-generated explanation if none exists.", level=2)
+
+    # Validate active repository presence
+    active_url = st.session_state.get("ingest_url", "").strip()
+    if not active_url:
+        empty_state("◇", "No repository analyzed",
+                    "Ingest a repository to see its overview here.")
+        return
 
     ensure_readme_or_explanation()
     repo = st.session_state.get("last_repo_name")
@@ -415,26 +396,136 @@ def render_project_overview():
         empty_state("◇", "Nothing to show", "No README or explanation available.")
 
 
+def render_stats_row():
+    with st.container(key="stats_row"):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            metric_card("◧", "Files Indexed", get_file_count(), tone="accent")
+        with c2:
+            metric_card("◫", "Chunks Stored", get_chunk_count(), tone="low")
+        with c3:
+            metric_card("◨", "Storage Used", get_storage_label(), tone="success")
+        with c4:
+            metric_card("◪", "Questions Asked", get_query_count(), tone="medium")
+
+
+def render_files_browser():
+    files = get_all_files()
+    if not files:
+        empty_state("◇", "No files indexed", "Ingest a repository to browse its files here.")
+        return
+
+    search = st.text_input(
+        "Search files", key="files_search", placeholder="Filter by filename…",
+        label_visibility="collapsed",
+    )
+    filtered = [f for f in files if search.lower() in f["filename"].lower()] if search else files
+
+    shown = filtered[:150]
+    caption = f"{len(filtered)} of {len(files)} files"
+    if len(filtered) > len(shown):
+        caption += f" — showing first {len(shown)}, refine your search to see more"
+    st.caption(caption)
+
+    for f in shown:
+        with st.container(key=f"file_row_{f['id']}"):
+            st.markdown(
+                f'<div class="dp-row">'
+                f'<div style="display:flex;align-items:center;gap:10px;overflow:hidden;min-width:0;">'
+                f'<span style="font-family:var(--font-mono);font-size:0.8125rem;color:var(--text-primary);'
+                f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{f["filename"]}</span>'
+                f'{file_type_chip(f["language"] or "text")}'
+                f'</div>'
+                f'<span style="color:var(--text-muted);font-size:0.75rem;white-space:nowrap;flex:0 0 auto;">'
+                f'{f["size_bytes"] / 1024:.1f} KB</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            with st.expander("Preview / delete", expanded=False):
+                content = get_file_content(f["id"]).get("content", "") or ""
+                st.code(content[:5000], language=f["language"] or "text", line_numbers=True)
+                if len(content) > 5000:
+                    st.caption(f"Showing first 5,000 of {len(content):,} characters.")
+                if st.button("Delete file", key=f"del_file_{f['id']}", type="secondary"):
+                    delete_file(f["id"])
+                    st.rerun()
+
+
+def render_recent_queries():
+    queries = get_recent_queries(8)
+    if not queries:
+        empty_state("◇", "No questions yet", "Ask the AI Codebase Assistant a question to see history here.")
+        return
+
+    for idx, q in enumerate(queries):
+        with st.container(key=f"query_row_{idx}"):
+            st.markdown(
+                f'<div class="dp-row" style="flex-direction:column;align-items:flex-start;gap:4px;">'
+                f'<span style="color:var(--text-primary);font-size:0.875rem;font-weight:500;">{q["question"]}</span>'
+                f'<span style="color:var(--text-muted);font-size:0.75rem;">{q["created_at"]}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            with st.expander("Answer", expanded=False):
+                st.markdown(q.get("answer") or "_No answer recorded._")
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Main Entry Point
 # ══════════════════════════════════════════════════════════════════════
 def render_unified_dashboard():
-    section_header("DevPulse Architect", "Codebase Ingestion & AI Chat Assistant", level=1)
+    st.markdown('<div style="height: 10px;"></div>', unsafe_allow_html=True)
 
-    # 1. Ingestion & Overview side-by-side
-    col_left, col_right = st.columns([1.1, 0.9])
-    with col_left:
-        render_ingestion_section()
-    with col_right:
-        render_overview()
-
-    st.markdown("---")
+    if "ingest_url" not in st.session_state:
+        st.session_state["ingest_url"] = ""
+    if "ingest_branch" not in st.session_state:
+        st.session_state["ingest_branch"] = "main"
 
     files = get_all_files()
-    if files:
-        # 2. Repo Overview (README / AI Explanation)
+
+    db_url = get_setting("active_repo_url", "")
+    entered_url = st.session_state.get("ingest_url", "").strip()
+    
+    entered_repo = parse_github_url(entered_url)
+    indexed_repo = parse_github_url(db_url)
+    
+    is_active = bool(entered_repo and indexed_repo and entered_repo == indexed_repo and files)
+    
+    if is_active:
+        # Sync last_repo_name
+        st.session_state["last_repo_name"] = db_url
+        
+        # 1. Ingestion & Repository details side-by-side
+        col_left, col_right = st.columns([1.1, 0.9])
+        with col_left:
+            with st.container(key="ingest_card"):
+                render_ingestion_section()
+        with col_right:
+            with st.container(key="details_card"):
+                render_repo_details()
+
+        st.markdown("---")
+
+        # 2. Workspace KPIs
+        render_stats_row()
+
+        st.markdown("---")
+
+        # 3. Repo Overview (README / AI Explanation)
         with st.expander("◇  Repository Overview & Architecture", expanded=True):
             render_project_overview()
+
+        # 4. Indexed file browser
+        with st.expander("🗂  Indexed Files", expanded=False):
+            render_files_browser()
+
+        # 5. Past questions asked via the AI Codebase Assistant
+        with st.expander("🕐  Recent Questions", expanded=False):
+            render_recent_queries()
     else:
-        empty_state("💬", "Workspace is empty", "Ingest a repository above to enable codebase overview and AI chat.")
+        # Centered ingestion section when no active repository is entered/loaded
+        col_left, col_mid, col_right = st.columns([0.2, 0.6, 0.2])
+        with col_mid:
+            with st.container(key="ingest_card"):
+                render_ingestion_section()
 

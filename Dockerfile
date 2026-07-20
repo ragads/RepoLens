@@ -11,13 +11,12 @@ ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 # Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies and Node.js
+# Install system dependencies (build-essential for any wheel that needs
+# compiling, curl for the HEALTHCHECK below). No Node.js — nothing in this
+# repo is TypeScript/JS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
-    software-properties-common \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the working directory

@@ -1,16 +1,37 @@
 # components/chat_widget.py
 import streamlit as st
 import services.chat_service as chat_service
-import services.database_service as database_service
 
 def render_chat_widget():
-    """Renders the AI Codebase Chat as a medium-sized floating popover in the bottom-right corner."""
+    """Renders the AI Codebase Chat as a custom floating panel in the bottom-right corner."""
+    from pages.dashboard import parse_github_url
+    from services.database_service import get_setting, get_file_count
+
+    url = st.session_state.get("ingest_url", "").strip()
+    if not url:
+        return
+
+    entered_repo = parse_github_url(url)
+    indexed_repo = parse_github_url(get_setting("active_repo_url", ""))
     
-    # Initialize chat history
+    if not entered_repo or not indexed_repo or entered_repo != indexed_repo:
+        return
+
+    # Check if there are files in database
+    if get_file_count() == 0:
+        return
+
+    # Initialize chat state
+    if "chat_open" not in st.session_state:
+        st.session_state["chat_open"] = False
+        
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = []
 
-    # Sanitize chat history to only contain strings (fixes previous delta generator issues)
+    if "chat_maximized" not in st.session_state:
+        st.session_state["chat_maximized"] = False
+
+    # Sanitize chat history to only contain strings
     st.session_state["chat_history"] = [
         m for m in st.session_state["chat_history"]
         if isinstance(m, dict)
@@ -18,156 +39,124 @@ def render_chat_widget():
         and isinstance(m.get("content"), str)
     ]
 
-    # Inject CSS to make the popover look like a floating chat widget
-    st.markdown(
-        """
-        <style>
-        /* Float the popover wrapper in the bottom-right corner */
-        div[data-testid="stPopover"] {
-            position: fixed !important;
-            bottom: 25px !important;
-            right: 25px !important;
-            z-index: 999999 !important;
-        }
+    # ── Launcher (round floating pulse button, bottom-right) ───────────────────
+    with st.container(key="dp_chat_launcher"):
+        if st.button("chat", key="dp_chat_toggle", help="Toggle AI Codebase Assistant"):
+            st.session_state["chat_open"] = not st.session_state["chat_open"]
+            st.rerun()
 
-        /* Style the trigger button as a circular FAB */
-        div[data-testid="stPopover"] > button {
-            border-radius: 50% !important;
-            width: 65px !important;
-            height: 65px !important;
-            font-size: 32px !important;
-            background-color: #6366f1 !important;
-            color: white !important;
-            border: none !important;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25) !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
-        }
+    if not st.session_state["chat_open"]:
+        return
 
-        div[data-testid="stPopover"] > button:hover {
-            transform: scale(1.1) rotate(5deg) !important;
-            background-color: #4f46e5 !important;
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3) !important;
-        }
-        
-        /* Hide the caret/down-arrow inside the popover button */
-        div[data-testid="stPopover"] > button span[data-testid="stIcon"] {
-            display: none !important;
-        }
+    # ── Floating Panel ────────────────────────────────────────────────────────
+    with st.container(key="dp_chat_panel"):
+        if st.session_state.get("chat_maximized", False):
+            st.markdown(
+                """
+                <style>
+                html body div.st-key-dp_chat_panel {
+                    width: 750px !important;
+                    height: 700px !important;
+                    max-height: calc(100vh - 120px) !important;
+                }
+                .st-key-dp_chat_scroll {
+                    flex-grow: 1 !important;
+                    height: auto !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
 
-        /* Removed stPopoverBody override to avoid blank rendering bug */
-
-        .floating-chat-header {
-            display: flex !important;
-            justify-content: space-between !important;
-            align-items: center !important;
-            padding-bottom: 10px !important;
-            border-bottom: 1px solid var(--border, #e2e8f0) !important;
-            margin-bottom: 10px !important;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            .floating-chat-header {
-                border-bottom-color: #2d2d44 !important;
-            }
-        }
-
-        .floating-chat-title {
-            font-weight: 700 !important;
-            font-size: 1.15rem !important;
-            color: var(--text-primary) !important;
-        }
-        
-        .floating-chat-subtitle {
-            font-size: 0.75rem !important;
-            color: var(--text-muted, #718096) !important;
-        }
-
-        .chat-scroll-area {
-            height: 380px !important;
-            overflow-y: auto !important;
-            margin-bottom: 10px !important;
-            padding-right: 5px !important;
-        }
-        
-        /* Ensure the input form stays at the bottom */
-        div[data-testid="stForm"] {
-            margin-top: auto;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # Render popover
-    with st.popover("💬"):
         # Header
-        st.markdown(
-            """
-            <div class="floating-chat-header">
-                <div>
-                    <div class="floating-chat-title">AI Codebase Assistant</div>
-                    <div class="floating-chat-subtitle">Grounded in your repository index</div>
+        col_title, col_size, col_close = st.columns([12, 1, 1])
+        with col_title:
+            st.markdown(
+                """
+                <div style="padding-top: 2px;">
+                    <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-primary); line-height: 1.2;">AI Codebase Assistant</div>
+                    <div style="font-size: 0.72rem; color: var(--text-muted);">Grounded in your repository index</div>
                 </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        # Messages area
-        st.markdown('<div class="chat-scroll-area">', unsafe_allow_html=True)
-        
-        if not st.session_state["chat_history"]:
-            st.caption("Ask questions about the repository files, libraries, or architecture.")
-            
-            st.markdown("**Suggested Questions:**")
-            sugs = [
-                "Explain the project architecture",
-                "What languages are used in this codebase?",
-                "Can you summarize the main components?"
-            ]
-            for idx, sug in enumerate(sugs):
-                if st.button(sug, key=f"sug_popover_{idx}", use_container_width=True):
-                    st.session_state["chat_history"].append({"role": "user", "content": sug})
+                """,
+                unsafe_allow_html=True
+            )
+        with col_size:
+            with st.container(key="dp_chat_size"):
+                if st.session_state.get("chat_maximized", False):
+                    if st.button("⤨", key="dp_chat_size_btn", help="Minimize/Restore"):
+                        st.session_state["chat_maximized"] = False
+                        st.rerun()
+                else:
+                    if st.button("⤢", key="dp_chat_size_btn", help="Maximize"):
+                        st.session_state["chat_maximized"] = True
+                        st.rerun()
+        with col_close:
+            with st.container(key="dp_chat_close"):
+                if st.button("✕", key="dp_chat_close_btn", help="Close chat"):
+                    st.session_state["chat_open"] = False
                     st.rerun()
-        else:
-            for msg in st.session_state["chat_history"]:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
 
-            # If last message is from user, generate response
-            if st.session_state["chat_history"][-1]["role"] == "user":
-                user_prompt = st.session_state["chat_history"][-1]["content"]
-                with st.chat_message("assistant"):
-                    with st.spinner("Analyzing codebase..."):
-                        try:
-                            response = chat_service.ask_question(user_prompt)
-                            if not isinstance(response, str):
-                                response = str(response)
-                        except Exception as e:
-                            response = f"Failed to get response: {e}"
-                        st.markdown(response)
-                st.session_state["chat_history"].append({"role": "assistant", "content": response})
-                st.rerun()
+        # Messages Scroll Area
+        with st.container(key="dp_chat_scroll"):
+            if not st.session_state["chat_history"]:
+                st.caption("Ask questions about the repository files, libraries, or architecture.")
+                
+                st.markdown(
+                    """
+                    <div style="font-size: 0.8rem; font-weight: 600; margin-bottom: 6px; color: var(--text-secondary);">Suggested Questions:</div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
+                sugs = [
+                    "Explain the project architecture",
+                    "What languages are used in this codebase?",
+                    "Can you summarize the main components?"
+                ]
+                for idx, sug in enumerate(sugs):
+                    if st.button(sug, key=f"sug_btn_{idx}", use_container_width=True):
+                        st.session_state["chat_history"].append({"role": "user", "content": sug})
+                        st.rerun()
+            else:
+                for msg in st.session_state["chat_history"]:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
 
-        st.markdown('</div>', unsafe_allow_html=True)
+                # If last message is from user, generate response
+                if st.session_state["chat_history"][-1]["role"] == "user":
+                    user_prompt = st.session_state["chat_history"][-1]["content"]
+                    with st.chat_message("assistant"):
+                        with st.spinner("Analyzing codebase..."):
+                            try:
+                                response = chat_service.ask_question(user_prompt)
+                                if not isinstance(response, str):
+                                    response = str(response)
+                            except Exception as e:
+                                response = f"Failed to get response: {e}"
+                            st.markdown(response)
+                    st.session_state["chat_history"].append({"role": "assistant", "content": response})
+                    st.rerun()
 
-        # Input Form
-        with st.form("chat_popover_form", clear_on_submit=True):
-            c1, c2 = st.columns([4, 1])
-            with c1:
-                user_query = st.text_input("Message...", placeholder="Type a message...", label_visibility="collapsed")
-            with c2:
-                submit_button = st.form_submit_button("Send", use_container_width=True)
-            
-            if submit_button and user_query.strip():
-                st.session_state["chat_history"].append({"role": "user", "content": user_query.strip()})
-                st.rerun()
+        # Input Field (styled inline inside the panel)
+        prompt = st.chat_input("Ask about this codebase...", key="dp_chat_input")
+        if prompt:
+            st.session_state["chat_history"].append({"role": "user", "content": prompt.strip()})
+            st.rerun()
 
-        # Clear Chat Button
+        # Export / Clear
         if st.session_state["chat_history"]:
-            if st.button("Clear Chat", key="clear_chat_popover_btn", use_container_width=True):
-                st.session_state["chat_history"] = []
-                st.rerun()
+            col_export, col_clear = st.columns(2)
+            with col_export:
+                transcript = "\n\n".join(
+                    f"**{'You' if m['role'] == 'user' else 'Assistant'}:** {m['content']}"
+                    for m in st.session_state["chat_history"]
+                )
+                st.download_button(
+                    "Export", data=transcript, file_name="devpulse_chat.md",
+                    mime="text/markdown", key="export_chat_panel_btn", use_container_width=True,
+                )
+            with col_clear:
+                if st.button("Clear Chat", key="clear_chat_panel_btn", use_container_width=True):
+                    st.session_state["chat_history"] = []
+                    st.rerun()
+

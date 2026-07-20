@@ -7,7 +7,7 @@ from google import genai
 logger = logging.getLogger("embedding_service")
 
 def get_embedding(text: str) -> Optional[List[float]]:
-    """Generates vector embedding for text using Google Gemini text-embedding-004 model."""
+    """Generates vector embedding for text using Google Gemini's embedding model."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         logger.warning("Gemini API key is not configured. Cannot generate embedding.")
@@ -15,7 +15,7 @@ def get_embedding(text: str) -> Optional[List[float]]:
     try:
         client = genai.Client(api_key=api_key)
         res = client.models.embed_content(
-            model="text-embedding-004",
+            model="gemini-embedding-001",
             contents=text
         )
         if res.embeddings and len(res.embeddings) > 0:

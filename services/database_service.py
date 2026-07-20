@@ -169,4 +169,10 @@ def insert_file_with_chunks(file_info: Dict[str, Any]) -> bool:
         
     return save_file(path, db_type, content, lang, len(content))
 
+def get_setting(key: str, default: str = "") -> str:
+    return sqlite_service.get_setting(key, default)
+
+def set_setting(key: str, value: str):
+    sqlite_service.set_setting(key, value)
+
 # end of file
